@@ -1,6 +1,6 @@
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Shield, Menu, X } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "./ui/button";
 
 const Header = () => {
@@ -13,8 +13,8 @@ const Header = () => {
     <header className="bg-card border-b border-border sticky top-0 z-40">
       <div className="container py-4">
         <div className="flex items-center justify-between">
-          <Link 
-            to="/" 
+          <Link
+            to="/"
             className="flex items-center gap-3 hover:opacity-80 transition-opacity"
             aria-label="Disaster Response Home"
           >
@@ -30,29 +30,15 @@ const Header = () => {
           {/* Desktop Navigation */}
           <nav className="hidden md:flex items-center gap-2" aria-label="Main navigation">
             <Link to="/">
-              <Button 
-                variant={isActive("/") ? "secondary" : "ghost"} 
-                size="sm"
-              >
-                Home
-              </Button>
+              <Button variant={isActive("/") ? "secondary" : "ghost"} size="sm">Home</Button>
             </Link>
             <Link to="/report">
-              <Button 
-                variant={isActive("/report") ? "secondary" : "ghost"} 
-                size="sm"
-              >
-                Report Incident
-              </Button>
+              <Button variant={isActive("/report") ? "secondary" : "ghost"} size="sm">Report Incident</Button>
             </Link>
             <Link to="/status">
-              <Button 
-                variant={isActive("/status") ? "secondary" : "ghost"} 
-                size="sm"
-              >
-                Track Status
-              </Button>
+              <Button variant={isActive("/status") ? "secondary" : "ghost"} size="sm">Track Status</Button>
             </Link>
+            {/* Admin link intentionally hidden. Use secret shortcut (Ctrl+Alt+A) to open /admin. */}
           </nav>
 
           {/* Mobile Menu Button */}
@@ -70,39 +56,42 @@ const Header = () => {
 
         {/* Mobile Navigation */}
         {isMenuOpen && (
-          <nav 
-            className="md:hidden pt-4 pb-2 space-y-2 animate-fade-in" 
-            aria-label="Mobile navigation"
-          >
+          <nav className="md:hidden pt-4 pb-2 space-y-2 animate-fade-in" aria-label="Mobile navigation">
             <Link to="/" onClick={() => setIsMenuOpen(false)}>
-              <Button 
-                variant={isActive("/") ? "secondary" : "ghost"} 
-                className="w-full justify-start"
-              >
-                Home
-              </Button>
+              <Button variant={isActive("/") ? "secondary" : "ghost"} className="w-full justify-start">Home</Button>
             </Link>
             <Link to="/report" onClick={() => setIsMenuOpen(false)}>
-              <Button 
-                variant={isActive("/report") ? "secondary" : "ghost"} 
-                className="w-full justify-start"
-              >
-                Report Incident
-              </Button>
+              <Button variant={isActive("/report") ? "secondary" : "ghost"} className="w-full justify-start">Report Incident</Button>
             </Link>
             <Link to="/status" onClick={() => setIsMenuOpen(false)}>
-              <Button 
-                variant={isActive("/status") ? "secondary" : "ghost"} 
-                className="w-full justify-start"
-              >
-                Track Status
-              </Button>
+              <Button variant={isActive("/status") ? "secondary" : "ghost"} className="w-full justify-start">Track Status</Button>
             </Link>
+            {/* Admin link intentionally hidden in mobile menu as well. */}
           </nav>
         )}
       </div>
+
+      {/* Secret shortcut listener: Ctrl+Alt+A opens /admin */}
+      <HeaderSecretShortcut />
     </header>
   );
 };
 
 export default Header;
+
+function HeaderSecretShortcut() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.altKey && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        navigate("/admin");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [navigate]);
+
+  return null;
+}

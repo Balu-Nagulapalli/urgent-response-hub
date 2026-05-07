@@ -7,6 +7,8 @@ import Home from "./pages/Home";
 import ReportIncident from "./pages/ReportIncident";
 import Status from "./pages/Status";
 import NotFound from "./pages/NotFound";
+import AdminDashboard from "./pages/AdminDashboard.tsx";
+import AdminLogin from "./pages/AdminLogin";
 
 const queryClient = new QueryClient();
 
@@ -20,6 +22,8 @@ const App = () => (
           <Route path="/" element={<Home />} />
           <Route path="/report" element={<ReportIncident />} />
           <Route path="/status" element={<Status />} />
+          <Route path="/admin/login" element={<AdminLogin />} />
+          <Route path="/admin" element={<AdminDashboard />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
