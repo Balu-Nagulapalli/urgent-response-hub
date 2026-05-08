@@ -2,13 +2,19 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Home from "./pages/Home";
+import { BrowserRouter, Navigate, Routes, Route } from "react-router-dom";
+
+// ── Existing pages ──────────────────────────────────────────────────────────
+import Home           from "./pages/Home";
 import ReportIncident from "./pages/ReportIncident";
-import Status from "./pages/Status";
-import NotFound from "./pages/NotFound";
-import AdminDashboard from "./pages/AdminDashboard.tsx";
-import AdminLogin from "./pages/AdminLogin";
+import Status         from "./pages/Status";
+import NotFound       from "./pages/NotFound";
+
+// ── Auth ────────────────────────────────────────────────────────────────────
+import { AuthProvider } from "./AuthContext";          // ✅ exact case
+import ProtectedRoute   from "./components/ProtectedRoute";
+import AdminLogin       from "./pages/AdminLogin";
+import TeamDashboard    from "./pages/TeamDashboard";  // ✅ exact case
 
 const queryClient = new QueryClient();
 
@@ -17,16 +23,65 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/report" element={<ReportIncident />} />
-          <Route path="/status" element={<Status />} />
-          <Route path="/admin/login" element={<AdminLogin />} />
-          <Route path="/admin" element={<AdminDashboard />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <Routes>
+
+            {/* ── Public ──────────────────────────────────────────── */}
+            <Route path="/"       element={<Home />} />
+            <Route path="/report" element={<ReportIncident />} />
+            <Route path="/status" element={<Status />} />
+
+            {/* ── Redirects ───────────────────────────────────────── */}
+            <Route path="/admin"  element={<Navigate to="/admin/login" replace />} />
+            <Route path="/login"  element={<Navigate to="/admin/login" replace />} />
+
+            {/* ── Login ───────────────────────────────────────────── */}
+            <Route path="/admin/login" element={<AdminLogin />} />
+
+            {/* ── Protected Dashboards ────────────────────────────── */}
+            <Route path="/dashboard/control-room" element={
+              <ProtectedRoute allowedRoles={["control_room_admin"]}>
+                <TeamDashboard />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/dashboard/police" element={
+              <ProtectedRoute allowedRoles={["police_team"]}>
+                <TeamDashboard />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/dashboard/medical" element={
+              <ProtectedRoute allowedRoles={["medical_team"]}>
+                <TeamDashboard />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/dashboard/fire" element={
+              <ProtectedRoute allowedRoles={["fire_team"]}>
+                <TeamDashboard />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/dashboard/rescue" element={
+              <ProtectedRoute allowedRoles={["rescue_team"]}>
+                <TeamDashboard />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/dashboard/general" element={
+              <ProtectedRoute allowedRoles={["general_team"]}>
+                <TeamDashboard />
+              </ProtectedRoute>
+            } />
+
+            {/* ── Catch all ───────────────────────────────────────── */}
+            <Route path="*" element={<NotFound />} />
+
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );

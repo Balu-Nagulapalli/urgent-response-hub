@@ -7,7 +7,7 @@ import {
   ArrowLeft, Loader2, Activity, Users, Flame, ShieldAlert,
 } from "lucide-react";
 import Layout from "@/components/Layout";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth, ROLE_CATEGORY } from "@/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
@@ -79,12 +79,13 @@ const AdminDashboard = () => {
   const [stateFilter, setStateFilter] = useState<FilterState>("all");
   const [catFilter,   setCatFilter]   = useState<CategoryFilter>("all");
   const auth = useAuth();
-  const [viewRole,     setViewRole]    = useState<"control" | "police" | "team">(auth.role ?? "control");
-  const [teamCategory, setTeamCategory] = useState<CategoryFilter>((auth.teamCategory as CategoryFilter) ?? "fire");
+  const userCategoryFilter = auth.user ? (ROLE_CATEGORY[auth.user.role] ?? null) : null;
+  const [viewRole,     setViewRole]    = useState<"control" | "police" | "team">("control");
+  const [teamCategory, setTeamCategory] = useState<CategoryFilter>("fire");
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
 
   // If not authenticated, redirect to login
-  if (!auth.isAuthenticated) return <Navigate to="/admin/login" replace />;
+  if (!auth.user) return <Navigate to="/admin/login" replace />;
 
   // ── Fetch all incidents from ServiceNow ─────────────────────────────────
 
@@ -122,17 +123,8 @@ const AdminDashboard = () => {
   const filtered = incidents.filter((inc) => {
     const stateOk = stateFilter === "all" || inc.state === stateFilter;
     const catOk   = catFilter   === "all" || inc.category === catFilter;
-
-    // Role-based visibility:
-    // - Control Room: sees all incidents
-    // - Police Team: sees all incidents (per requirements)
-    // - Team: sees only incidents matching their emergency type (teamCategory)
-    // If user is authenticated, prefer their assigned role; otherwise fall back to viewRole selector
-    const activeRole = auth.isAuthenticated ? (auth.role ?? viewRole) : viewRole;
-    const activeTeam = auth.isAuthenticated && auth.teamCategory ? (auth.teamCategory as string) : teamCategory;
-
-    const roleOk = activeRole === "team" ? inc.category === activeTeam : true;
-
+    const userCat = auth.user ? (ROLE_CATEGORY[auth.user.role] ?? null) : null;
+    const roleOk  = userCat ? inc.category === userCat : true;
     return stateOk && catOk && roleOk;
   });
 
