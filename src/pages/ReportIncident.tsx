@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   AlertTriangle, Mail, MapPin, Phone,
-  User, FileText, Send, LocateFixed, Loader2, CheckCircle2,
+  User, FileText, Send, LocateFixed, Loader2, CheckCircle2, Mic,
 } from "lucide-react";
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ interface GPSData {
   fullAddress: string;
 }
 type GPSStatus = "idle" | "loading" | "success" | "error";
+type VoiceStatus = "idle" | "recording" | "processing" | "error";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,8 @@ type ReportFormData = z.infer<typeof reportSchema>;
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const ReportIncident = () => {
+  const MAX_RECORD_SECONDS = 45;
+
   const navigate  = useNavigate();
   const { toast } = useToast();
 
@@ -62,9 +65,159 @@ const ReportIncident = () => {
   const [gpsStatus,    setGpsStatus]    = useState<GPSStatus>("idle");
   const [gpsData,      setGpsData]      = useState<GPSData | null>(null);
   const [gpsError,     setGpsError]     = useState("");
+  const [voiceText,    setVoiceText]    = useState("");
+  const [showVoice,    setShowVoice]    = useState(false);
+  const [voiceStatus,  setVoiceStatus]  = useState<VoiceStatus>("idle");
+  const [recordingTimeLeft, setRecordingTimeLeft] = useState<number>(MAX_RECORD_SECONDS);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const { register, handleSubmit, setValue, formState: { errors } } =
     useForm<ReportFormData>({ resolver: zodResolver(reportSchema) });
+
+  const clearVoiceTimers = () => {
+    if (recordTimeoutRef.current) {
+      clearTimeout(recordTimeoutRef.current);
+      recordTimeoutRef.current = null;
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      clearVoiceTimers();
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
+  const startVoiceRecognition = async () => {
+    if (!window.MediaRecorder) {
+      toast({
+        title: "Voice input not supported",
+        description: "Your browser does not support audio recording.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      const preferredMimeType =
+        MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm";
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: preferredMimeType });
+      const chunks: Blob[] = [];
+
+      mediaRecorderRef.current = mediaRecorder;
+      streamRef.current = stream;
+      setRecordingTimeLeft(MAX_RECORD_SECONDS);
+
+      setVoiceStatus("recording");
+      toast({
+        title: "🎙️ Recording",
+        description: `Speak clearly. Recording will auto-stop in ${MAX_RECORD_SECONDS} seconds.`,
+      });
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        clearVoiceTimers();
+        setVoiceStatus("processing");
+
+        try {
+          const blob = new Blob(chunks, { type: preferredMimeType });
+          const formData = new FormData();
+          formData.append("file", blob, "emergency-report.webm");
+          formData.append("language", "en");
+
+          const response = await fetch("http://localhost:5000/speech-to-text", {
+            method: "POST",
+            body: formData,
+          });
+
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(data?.details || data?.error || "Unable to transcribe audio");
+          }
+
+          const transcript = (data?.text || "").trim();
+          if (!transcript) {
+            throw new Error("No speech detected. Please try again closer to the microphone.");
+          }
+
+          setVoiceText(transcript);
+
+          toast({
+            title: "Voice captured",
+            description: transcript,
+          });
+          setVoiceStatus("idle");
+        } catch (error: any) {
+          setVoiceStatus("error");
+          toast({
+            title: "Transcription failed",
+            description: error?.message || "Please try again.",
+            variant: "destructive",
+          });
+        } finally {
+          stream.getTracks().forEach((track) => track.stop());
+          mediaRecorderRef.current = null;
+          streamRef.current = null;
+          setRecordingTimeLeft(MAX_RECORD_SECONDS);
+        }
+      };
+
+      mediaRecorder.start();
+      countdownIntervalRef.current = setInterval(() => {
+        setRecordingTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+
+      recordTimeoutRef.current = setTimeout(() => {
+        if (mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+      }, MAX_RECORD_SECONDS * 1000);
+    } catch {
+      setVoiceStatus("error");
+      clearVoiceTimers();
+      setRecordingTimeLeft(MAX_RECORD_SECONDS);
+      toast({
+        title: "Microphone access denied",
+        description: "Please allow microphone permission and try again.",
+        variant: "destructive",
+      });
+    }
+  };
 
   // ── GPS ───────────────────────────────────────────────────────────────────
 
@@ -100,6 +253,7 @@ const ReportIncident = () => {
         setGpsData({ latitude: lat, longitude: lng, accuracy: acc, fullAddress });
         setGpsStatus("success");
       },
+      
       (err) => {
         const msgs: Record<number, string> = {
           1: "Permission denied. Please allow location access.",
@@ -138,6 +292,7 @@ const ReportIncident = () => {
       u_full_address:  data.location,
       u_gps_latitude:  data.latitude  ?? "",
       u_gps_longitude: data.longitude ?? "",
+      u_voice_script:  voiceText.trim(),
 
       // Built-in fields
       category:          data.emergencyType,
@@ -193,6 +348,7 @@ const ReportIncident = () => {
         longitude:     data.longitude ?? "",
         emergencyType: data.emergencyType,
         description:   data.description,
+        voiceTranscript: voiceText.trim(),
         status:        "pending",
         priority:      isHighPriority ? "high" : "medium",
         submittedAt:   new Date().toISOString(),
@@ -223,7 +379,7 @@ const ReportIncident = () => {
   const GPSButton = () => {
     if (gpsStatus === "loading")
       return (
-        <Button type="button" variant="outline" size="sm" disabled className="gap-2 shrink-0">
+        <Button type="button" variant="outline" size="sm" disabled  className="gap-2 shrink-0">
           <Loader2 className="h-4 w-4 animate-spin" /> Locating…
         </Button>
       );
@@ -354,12 +510,70 @@ const ReportIncident = () => {
 
               {/* Description */}
               <div className="space-y-2">
-                <Label htmlFor="description" className="text-base font-medium flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-muted-foreground" />
-                  Description
+                <Label htmlFor="description" className="text-base font-medium flex items-center gap-2 justify-between">
+                  <span className="flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-muted-foreground" />
+                    Description
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setShowVoice(true);
+                      startVoiceRecognition();
+                    }}
+                    className="gap-2">
+                    <Mic className="h-4 w-4" />
+                    {voiceStatus === "recording"
+                      ? "Recording..."
+                      : voiceStatus === "processing"
+                        ? "Processing..."
+                        : "Record Voice"}
+                  </Button>
                 </Label>
+                
+                {showVoice && (
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 mb-3">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-sm font-medium text-blue-900">
+                        🎤 Voice Input
+                        {voiceStatus === "recording" ? " (recording...)" : ""}
+                        {voiceStatus === "processing" ? " (processing...)" : ""}
+                      </span>
+                      <span className="text-sm text-muted-foreground">
+                        {voiceStatus === "recording"
+                          ? `Recording — ${recordingTimeLeft}s left`
+                          : voiceStatus === "processing"
+                            ? "Processing transcription..."
+                            : "Click Record Voice to start"}
+                      </span>
+                    </div>
+                    {voiceStatus === "recording" && (
+                      <div className="flex items-center justify-between gap-3 mb-3">
+                        <p className="text-sm text-blue-800">
+                          Auto stop in <strong>{recordingTimeLeft}s</strong>
+                        </p>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          onClick={stopRecording}
+                        >
+                          Stop Recording
+                        </Button>
+                      </div>
+                    )}
+                    {voiceText && (
+                      <div className="text-sm text-blue-800 bg-white rounded p-2 border border-blue-100">
+                        <strong>Transcribed:</strong> {voiceText}
+                      </div>
+                    )}
+                  </div>
+                )}
+                
                 <Textarea id="description"
-                  placeholder="Describe the emergency — people affected, immediate needs, visible dangers..."
+                  placeholder="Describe the emergency — people affected, immediate needs, visible dangers... or use voice input above"
                   className="min-h-[150px] text-base resize-none"
                   {...register("description")} />
                 {errors.description && <p className="text-sm text-destructive">{errors.description.message}</p>}
