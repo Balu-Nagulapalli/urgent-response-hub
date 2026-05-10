@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 
 interface IncidentData {
   id:            string;
+  sys_id?:       string;
   fullName:      string;
   email:         string;
   contactNumber: string;
@@ -24,6 +25,13 @@ interface IncidentData {
   status:        "pending" | "active" | "resolved";
   priority:      "low" | "medium" | "high";
   submittedAt:   string;
+}
+
+interface ActivityEntry {
+  value: string;
+  sys_created_by: string;
+  sys_created_on: string;
+  element: "work_notes" | "comments";
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -54,6 +62,26 @@ const TIMELINE = [
   { key: "resolved", label: "Resolved",          desc: "Assistance has been provided"               },
 ];
 
+const formatDateIST = (dateStr: string): string => {
+  if (!dateStr) return "N/A";
+  const parsed = dateStr.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(dateStr)
+    ? new Date(dateStr)
+    : new Date(`${dateStr}Z`);
+
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata",
+  }).format(parsed);
+};
+
+const formatTeamName = (username: string): string => {
+  if (!username) return "Team";
+  return username
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
 // ─── ServiceNow state map ─────────────────────────────────────────────────────
 // ServiceNow incident state field values:
 // 1 = New → pending | 2 = In Progress → active | 6 = Resolved → resolved
@@ -71,9 +99,11 @@ const Status = () => {
   const [searchParams]                  = useSearchParams();
   const [incidentId,    setIncidentId]  = useState(searchParams.get("id") ?? "");
   const [incident,      setIncident]    = useState<IncidentData | null>(null);
+  const [updates,       setUpdates]     = useState<ActivityEntry[]>([]);
   const [isSearching,   setIsSearching] = useState(false);
   const [notFound,      setNotFound]    = useState(false);
   const [isFetchingLive, setIsFetchingLive] = useState(false);
+  const [updatesLoading, setUpdatesLoading] = useState(false);
 
   // Auto-search when arriving from the form with ?id=INC...
   useEffect(() => {
@@ -90,6 +120,7 @@ const Status = () => {
     setIsSearching(true);
     setNotFound(false);
     setIncident(null);
+    setUpdates([]);
 
     // Step 1: load from localStorage (instant, populated right after submission)
     const stored = localStorage.getItem("lastIncident");
@@ -100,6 +131,7 @@ const Status = () => {
           setIncident(parsed as IncidentData);
           setIsSearching(false);
           // Step 2: also fetch live status from ServiceNow in background
+          if (parsed.sys_id) fetchActivity(parsed.sys_id);
           fetchLiveStatus(searchId, parsed.sys_id);
           return;
         }
@@ -142,14 +174,15 @@ const Status = () => {
       const liveStatus = SN_STATE_MAP[record.state] ?? "pending";
 
       // Update local incident with latest state from ServiceNow
-      setIncident((prev) => prev ? { ...prev, status: liveStatus } : prev);
+      setIncident((prev) => prev ? { ...prev, status: liveStatus, sys_id: record.sys_id ?? prev.sys_id } : prev);
+      fetchActivity(record.sys_id);
 
       // Also update localStorage
       const stored = localStorage.getItem("lastIncident");
       if (stored) {
         try {
           const parsed = JSON.parse(stored);
-          localStorage.setItem("lastIncident", JSON.stringify({ ...parsed, status: liveStatus }));
+          localStorage.setItem("lastIncident", JSON.stringify({ ...parsed, status: liveStatus, sys_id: record.sys_id ?? parsed.sys_id }));
         } catch { /* ignore */ }
       }
     } catch { /* silently fail — local data still shows */ }
@@ -182,6 +215,7 @@ const Status = () => {
 
       setIncident({
         id:            record.number,
+        sys_id:        record.sys_id,
         fullName:      record.short_description ?? "—",
         email:         record.u_caller_email    ?? "—",
         contactNumber: record.u_caller_phone    ?? "—",
@@ -194,8 +228,35 @@ const Status = () => {
         priority:      snPriority,
         submittedAt:   record.opened_at         ?? new Date().toISOString(),
       });
+      fetchActivity(record.sys_id);
       return true;
     } catch { return false; }
+  };
+
+  const fetchActivity = async (sysId?: string) => {
+    if (!sysId) return;
+
+    setUpdatesLoading(true);
+    try {
+      const SN_INSTANCE = import.meta.env.VITE_SN_INSTANCE;
+      const SN_USERNAME = import.meta.env.VITE_SN_USERNAME;
+      const SN_PASSWORD = import.meta.env.VITE_SN_PASSWORD;
+      const auth        = "Basic " + btoa(`${SN_USERNAME}:${SN_PASSWORD}`);
+
+      const res = await fetch(
+        `${SN_INSTANCE}/api/now/table/sys_journal_field?sysparm_query=element_id=${sysId}^element=work_notes^ORelement=comments&sysparm_fields=value,sys_created_by,sys_created_on,element&sysparm_orderby=sys_created_ondesc&sysparm_limit=50`,
+        { headers: { Accept: "application/json", Authorization: auth } }
+      );
+
+      if (!res.ok) return;
+
+      const json = await res.json();
+      setUpdates((json?.result || []) as ActivityEntry[]);
+    } catch {
+      setUpdates([]);
+    } finally {
+      setUpdatesLoading(false);
+    }
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -325,6 +386,61 @@ const Status = () => {
                       )}
                     </div>
                   </div>
+                </div>
+
+                {/* Team updates */}
+                <div className="mt-6 border-t border-border pt-5">
+                  <div className="flex items-center justify-between gap-3 mb-4">
+                    <div>
+                      <h3 className="font-semibold text-foreground">Team Updates</h3>
+                      <p className="text-xs text-muted-foreground">Notes and comments from the response team</p>
+                    </div>
+                    {updatesLoading && (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Loading
+                      </div>
+                    )}
+                  </div>
+
+                  {updates.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                      No team updates yet.
+                    </p>
+                  ) : (
+                    <div className="relative pl-5">
+                      <div className="absolute left-2.5 top-1 bottom-1 w-px bg-border" />
+                      <div className="space-y-4">
+                        {updates.map((entry, index) => {
+                          const isWorkNote = entry.element === "work_notes";
+                          const dotClasses = isWorkNote
+                            ? "border-amber-300 bg-amber-500"
+                            : "border-sky-300 bg-sky-500";
+
+                          return (
+                            <div key={`${entry.sys_created_on}-${index}`} className="relative">
+                              <div className={`absolute -left-[1.15rem] top-1 h-3.5 w-3.5 rounded-full border-2 ${dotClasses}`} />
+                              <div className="rounded-xl border border-border bg-background px-4 py-3 shadow-sm">
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${isWorkNote ? "bg-amber-50 text-amber-700" : "bg-sky-50 text-sky-700"}`}>
+                                      {isWorkNote ? "Work Note" : "Comment"}
+                                    </span>
+                                    <p className="text-sm font-semibold text-foreground">{formatTeamName(entry.sys_created_by)}</p>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground">{formatDateIST(entry.sys_created_on)}</p>
+                                </div>
+
+                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground">
+                                  {entry.value}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 

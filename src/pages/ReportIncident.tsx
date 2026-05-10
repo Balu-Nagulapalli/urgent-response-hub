@@ -32,7 +32,10 @@ type GPSStatus = "idle" | "loading" | "success" | "error";
 const reportSchema = z
   .object({
     fullName:      z.string().trim().min(2, "Full Name is required").max(100),
-    email:         z.string().email("Enter a valid email address").max(255),
+    email:         z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.string().trim().email("Enter a valid email address").max(255).optional()
+    ),
     contactNumber: z.string().trim().min(10, "Contact Number is required").max(15),
     location:      z.string().min(5, "Please provide a detailed location").max(500),
     emergencyType: z.enum(["medical", "rescue", "fire", "police", "others"]),
@@ -133,7 +136,7 @@ const ReportIncident = () => {
 
     const payload = {
       // Custom fields — exact column names from ServiceNow incident table
-      u_caller_email:  data.email,
+      ...(data.email ? { u_caller_email: data.email } : {}),
       u_caller_phone:  data.contactNumber,
       u_full_address:  data.location,
       u_gps_latitude:  data.latitude  ?? "",
@@ -145,7 +148,7 @@ const ReportIncident = () => {
       description:
         `Reporter : ${data.fullName}\n` +
         `Phone    : ${data.contactNumber}\n` +
-        `Email    : ${data.email}\n` +
+        (data.email ? `Email    : ${data.email}\n` : "") +
         `Location : ${data.location}\n` +
         (data.latitude ? `GPS      : ${data.latitude}, ${data.longitude}\n` : "") +
         `\nDetails  :\n${data.description}`,
@@ -282,7 +285,7 @@ const ReportIncident = () => {
               <div className="space-y-2">
                 <Label htmlFor="email" className="text-base font-medium flex items-center gap-2">
                   <Mail className="h-4 w-4 text-muted-foreground" />
-                  Email Address <span className="text-sm text-muted-foreground font-normal">(for updates)</span>
+                  Email Address <span className="text-sm text-muted-foreground font-normal">(optional, for updates)</span>
                 </Label>
                 <Input id="email" type="email" placeholder="Enter your email"
                   className="h-12 text-base" {...register("email")} />

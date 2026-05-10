@@ -34,6 +34,13 @@ interface Stats {
   closed: number;
 }
 
+interface ActivityEntry {
+  sys_created_on: string;
+  sys_created_by: string;
+  value: string;
+  element: "work_notes" | "comments";
+}
+
 // ─── Permissions ────────────────────────────────────────────────────────────
 const canChangePriority = (role: UserRole): boolean =>
   role === "control_room_admin";
@@ -99,10 +106,13 @@ const PRIORITY_COLOR: Record<string, string> = {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 const formatDate = (dateStr: string): string => {
   if (!dateStr) return "N/A";
-  return new Intl.DateTimeFormat("en-US", {
+  // ServiceNow returns UTC without 'Z' — add it so JS parses correctly
+  const utcStr = dateStr.includes("T") ? dateStr : dateStr.replace(" ", "T") + "Z";
+  return new Intl.DateTimeFormat("en-IN", {
     month: "short", day: "numeric", year: "numeric",
     hour: "2-digit", minute: "2-digit",
-  }).format(new Date(dateStr));
+    timeZone: "Asia/Kolkata", // ✅ IST
+  }).format(new Date(utcStr));
 };
 
 const buildQueryFilter = (role: UserRole): string => {
@@ -115,7 +125,7 @@ const getStats = (incidents: Incident[]): Stats => ({
   total:      incidents.length,
   new:        incidents.filter((i) => i.state === "1").length,
   inProgress: incidents.filter((i) => i.state === "2").length,
-  resolved:   incidents.filter((i) => i.state === "6").length,
+  resolved:   incidents.filter((i) => i.state === "6" || i.state === "7").length,
   closed:     incidents.filter((i) => i.state === "7").length,
 });
 
@@ -134,6 +144,8 @@ export default function TeamDashboard() {
   const [savingNote,      setSavingNote]      = useState(false);
   const [updatingState,   setUpdatingState]   = useState(false);
   const [updatingPriority,setUpdatingPriority]= useState(false);
+  const [activity,        setActivity]        = useState<ActivityEntry[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
 
   // ─ Fetch ────────────────────────────────────────────────────────────────
   const fetchIncidents = async () => {
@@ -151,12 +163,35 @@ export default function TeamDashboard() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setIncidents(data.result || []);
+      setActivity([]);
       setSelectedIncident(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchActivity = async (sys_id: string) => {
+    setActivityLoading(true);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_SN_INSTANCE}/api/now/table/sys_journal_field?sysparm_query=element_id=${sys_id}^element=work_notes^ORelement=comments&sysparm_fields=value,sys_created_by,sys_created_on,element&sysparm_orderby=sys_created_ondesc&sysparm_limit=50`,
+        { headers: { Accept: "application/json", Authorization: "Basic " + btoa(`${import.meta.env.VITE_SN_USERNAME}:${import.meta.env.VITE_SN_PASSWORD}`) }}
+      );
+      const d = await res.json();
+      setActivity(d.result || []);
+    } catch {
+      setActivity([]);
+    } finally {
+      setActivityLoading(false);
+    }
+  };
+
+  const selectIncident = (inc: Incident | null) => {
+    setSelectedIncident(inc);
+    setActivity([]);
+    if (inc) fetchActivity(inc.sys_id);
   };
 
   useEffect(() => { fetchIncidents(); }, [user]);
@@ -184,14 +219,34 @@ export default function TeamDashboard() {
   const updateLocal = (updated: Incident) => {
     setIncidents((prev) => prev.map((i) => i.sys_id === updated.sys_id ? updated : i));
     setSelectedIncident(updated);
+    fetchActivity(updated.sys_id);
   };
 
   // ─ Change state ─────────────────────────────────────────────────────────
   const handleChangeState = async (newState: string) => {
     if (!selectedIncident || !user || !canChangeState(user.role)) return;
     setUpdatingState(true);
-    try { updateLocal(await patchIncident(selectedIncident.sys_id, { state: newState })); }
-    catch (err) { setError(err instanceof Error ? err.message : "Failed to update state"); }
+    try {
+      const unsavedNote = workNoteInput.trim();
+
+      // ── If there's an unsaved note, save it first ──────────────────────
+      if (unsavedNote) {
+        await patchIncident(selectedIncident.sys_id, { work_notes: unsavedNote });
+        setWorkNoteInput("");
+      }
+
+      const body: Record<string, string> = { state: newState };
+
+      // ServiceNow requires these fields when resolving (state=6)
+      if (newState === "6") {
+        body.close_code = "Solution provided";
+        body.close_notes = unsavedNote || selectedIncident.work_notes || "Resolved by team";
+      }
+
+      updateLocal(await patchIncident(selectedIncident.sys_id, body));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update state");
+    }
     finally { setUpdatingState(false); }
   };
 
@@ -214,7 +269,32 @@ export default function TeamDashboard() {
     if (!selectedIncident || !workNoteInput.trim() || !user || !canAddNotes(user.role)) return;
     setSavingNote(true);
     try {
-      updateLocal(await patchIncident(selectedIncident.sys_id, { work_notes: workNoteInput }));
+      const SN = import.meta.env.VITE_SN_INSTANCE;
+      const auth = "Basic " + (localStorage.getItem("auth_token") || "");
+
+      const res = await fetch(
+        `${SN}/api/now/table/incident/${selectedIncident.sys_id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: auth,
+            "X-no-response-body": "false",
+          },
+          body: JSON.stringify({
+            work_notes: workNoteInput,
+          }),
+        }
+      );
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const updated = {
+        ...selectedIncident,
+        work_notes: (selectedIncident.work_notes ? selectedIncident.work_notes + "\n" : "") + workNoteInput,
+      };
+      setSelectedIncident(updated);
+      setIncidents((prev) => prev.map((i) => i.sys_id === updated.sys_id ? updated : i));
       setWorkNoteInput("");
     } catch (err) { setError(err instanceof Error ? err.message : "Failed to add note"); }
     finally { setSavingNote(false); }
@@ -223,19 +303,45 @@ export default function TeamDashboard() {
   // ─ State transition button ───────────────────────────────────────────────
   const getStateButton = () => {
     if (!selectedIncident || !user || !canChangeState(user.role)) return null;
-    const map: Record<string, [string, string]> = {
-      "1": ["2", "▶ Start Progress"],
-      "2": ["6", "✓ Mark Resolved"],
-      "6": ["7", "✕ Close Incident"],
-    };
-    const entry = map[selectedIncident.state];
-    if (!entry) return null;
-    return (
-      <Button onClick={() => handleChangeState(entry[0])} disabled={updatingState} className="w-full">
-        {updatingState && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        {entry[1]}
-      </Button>
-    );
+    switch (selectedIncident.state) {
+      case "1":
+        return (
+          <Button onClick={() => handleChangeState("2")} disabled={updatingState} className="w-full">
+            {updatingState && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            ▶ Start Progress
+          </Button>
+        );
+      case "2":
+        return (
+          <div className="space-y-2">
+            {!selectedIncident.work_notes && !workNoteInput.trim() && (
+              <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">
+                ⚠️ Add a work note before resolving
+              </p>
+            )}
+            <Button
+              onClick={() => handleChangeState("6")}
+              disabled={updatingState || (!selectedIncident.work_notes && !workNoteInput.trim())}
+              className="w-full"
+            >
+              {updatingState && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              ✓ Mark as Resolved
+            </Button>
+          </div>
+        );
+      case "6":
+        return (
+          <p className="text-xs text-center py-2 bg-gray-50 rounded border text-gray-400">
+            ✓ Resolved — click Close to finalize
+          </p>
+        );
+      case "7":
+        return (
+          <p className="text-xs text-center py-2 bg-green-50 rounded border text-green-600 font-medium">
+            ✅ Incident Closed
+          </p>
+        );
+    }
   };
 
   if (!user) return <div className="p-8 text-center">Loading...</div>;
@@ -293,27 +399,28 @@ export default function TeamDashboard() {
       )}
 
       {/* STATS */}
-      <div className="grid grid-cols-4 gap-4 px-6 py-4 bg-white border-b">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 px-6 py-4 bg-white border-b">
         <StatCard label="Total"       count={stats.total}      icon={<Activity />}    />
         <StatCard label="New"         count={stats.new}        icon={<Clock />}       />
         <StatCard label="In Progress" count={stats.inProgress} icon={<Loader2 />}     />
-        <StatCard label="Resolved"    count={stats.resolved}   icon={<CheckCircle />} />
+        <StatCard label="Resolved/Closed" count={stats.resolved} icon={<CheckCircle />} />
       </div>
 
       {/* FILTER TABS + CONTENT */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex border-b bg-white px-6 py-2 gap-2">
+        <div className="flex border-b bg-white px-4 py-2 gap-2 overflow-x-auto whitespace-nowrap">
           {([null, "1", "2", "6", "7"] as (string | null)[]).map((val) => (
-            <FilterTab
-              key={val ?? "all"}
-              label={val ? STATE_LABEL[val] : "All"}
-              active={stateFilter === val}
-              onClick={() => setStateFilter(val)}
-            />
+            <div key={val ?? "all"} className="flex-shrink-0">
+              <FilterTab
+                label={val ? STATE_LABEL[val] : "All"}
+                active={stateFilter === val}
+                onClick={() => setStateFilter(val)}
+              />
+            </div>
           ))}
         </div>
 
-        <div className="flex-1 flex overflow-hidden gap-4 p-4">
+        <div className="flex-1 flex flex-col sm:flex-row overflow-hidden gap-4 p-4">
 
           {/* INCIDENT LIST */}
           <div className="flex-1 bg-white rounded-lg shadow overflow-y-auto">
@@ -333,7 +440,7 @@ export default function TeamDashboard() {
                 </p>
                 {filteredIncidents.map((incident) => (
                   <div key={incident.sys_id}
-                    onClick={() => setSelectedIncident(incident)}
+                    onClick={() => selectIncident(incident)}
                     className={`border-b p-4 cursor-pointer transition-colors ${
                       selectedIncident?.sys_id === incident.sys_id ? "bg-blue-50 border-l-4 border-l-blue-500" : "hover:bg-gray-50"
                     }`}>
@@ -366,8 +473,8 @@ export default function TeamDashboard() {
           </div>
 
           {/* DETAIL PANEL */}
-          {selectedIncident && (
-            <div className="w-96 bg-white rounded-lg shadow overflow-y-auto flex flex-col">
+            {selectedIncident && (
+            <div className="w-full sm:w-96 bg-white rounded-lg shadow overflow-y-auto flex flex-col">
               {/* Header */}
               <div className="p-5 border-b sticky top-0 bg-white z-10">
                 <div className="flex items-start justify-between mb-1">
@@ -376,7 +483,7 @@ export default function TeamDashboard() {
                     <a href={`${import.meta.env.VITE_SN_INSTANCE}/incident.do?sys_id=${selectedIncident.sys_id}`}
                       target="_blank" rel="noopener noreferrer"
                       className="text-xs text-blue-600 hover:underline">↗ SN</a>
-                    <button onClick={() => setSelectedIncident(null)}
+                    <button onClick={() => selectIncident(null)}
                       className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
                   </div>
                 </div>
@@ -482,7 +589,9 @@ export default function TeamDashboard() {
                 </div>
 
                 {/* Work notes */}
-                {user && canAddNotes(user.role) && (
+                {user && canAddNotes(user.role) && 
+                 selectedIncident.state !== "6" && 
+                 selectedIncident.state !== "7" && (
                   <div>
                     <p className="text-xs font-semibold text-gray-500 uppercase mb-2">Work Notes</p>
                     {selectedIncident.work_notes && (
@@ -504,6 +613,50 @@ export default function TeamDashboard() {
                     </Button>
                   </div>
                 )}
+
+                {/* Activity Timeline */}
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase mb-3 flex items-center gap-2">
+                    <Activity className="h-3.5 w-3.5" />
+                    Activity History
+                  </p>
+
+                  {activityLoading ? (
+                    <div className="flex items-center gap-2 text-gray-400 text-xs py-2">
+                      <Loader2 className="h-3 w-3 animate-spin" /> Loading history...
+                    </div>
+                  ) : activity.length === 0 ? (
+                    <p className="text-xs text-gray-400 italic">No activity yet</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {activity.map((entry, idx) => (
+                        <div key={idx} className="flex gap-3">
+                          {/* Avatar */}
+                          <div className="w-7 h-7 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+                            {entry.sys_created_by.charAt(0).toUpperCase()}
+                          </div>
+                          {/* Content */}
+                          <div className="flex-1 bg-gray-50 rounded-lg p-2.5 border border-gray-100">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-semibold text-gray-700">
+                                {entry.sys_created_by.replace(/_/g, " ")}
+                              </span>
+                              <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                                entry.element === "work_notes"
+                                  ? "bg-blue-100 text-blue-700"
+                                  : "bg-green-100 text-green-700"
+                              }`}>
+                                {entry.element === "work_notes" ? "Work Note" : "Comment"}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-600 whitespace-pre-wrap">{entry.value}</p>
+                            <p className="text-xs text-gray-400 mt-1">{formatDate(entry.sys_created_on)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 {/* State transition */}
                 {user && canChangeState(user.role) && (
@@ -537,7 +690,7 @@ function StatCard({ label, count, icon }: { label: string; count: number; icon: 
 function FilterTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className={`px-4 py-2 font-medium text-sm transition-colors ${
+      className={`inline-flex items-center flex-shrink-0 px-3 sm:px-4 py-2 text-sm font-medium transition-colors rounded-md ${
         active ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-600 hover:text-gray-900"
       }`}>
       {label}
