@@ -123,6 +123,9 @@ const ReportIncident = () => {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          // Better audio input settings
+          channelCount: 1, // Mono audio for better noise reduction
+          sampleRate: { ideal: 16000 }, // Optimal for speech recognition
         },
       });
 
@@ -140,7 +143,7 @@ const ReportIncident = () => {
 
       setVoiceStatus("recording");
       toast({
-        title: "🎙️ Recording",
+        title: "🎙️ Recording started",
         description: `Speak clearly. Recording will auto-stop in ${MAX_RECORD_SECONDS} seconds.`,
       });
 
@@ -155,7 +158,17 @@ const ReportIncident = () => {
         setVoiceStatus("processing");
 
         try {
+          if (chunks.length === 0) {
+            throw new Error("No audio data captured. Please try again.");
+          }
+
           const blob = new Blob(chunks, { type: preferredMimeType });
+          
+          // Check if audio file is too small
+          if (blob.size < 1000) {
+            throw new Error("Recording too short. Please speak for at least 1 second.");
+          }
+
           const formData = new FormData();
           formData.append("file", blob, "emergency-report.webm");
           formData.append("language", "en");
@@ -163,6 +176,7 @@ const ReportIncident = () => {
           const response = await fetch("http://localhost:5000/speech-to-text", {
             method: "POST",
             body: formData,
+            signal: AbortSignal.timeout(60000), // 60 second timeout
           });
 
           const data = await response.json().catch(() => ({}));
@@ -172,21 +186,24 @@ const ReportIncident = () => {
 
           const transcript = (data?.text || "").trim();
           if (!transcript) {
-            throw new Error("No speech detected. Please try again closer to the microphone.");
+            throw new Error("No speech detected. Speak louder and reduce background noise.");
           }
 
           setVoiceText(transcript);
 
           toast({
-            title: "Voice captured",
+            title: "✅ Voice captured",
             description: transcript,
           });
           setVoiceStatus("idle");
         } catch (error: any) {
           setVoiceStatus("error");
+          const errorMsg = error?.name === "AbortError" 
+            ? "Request timed out. Check if backend is running."
+            : error?.message || "Please try again.";
           toast({
-            title: "Transcription failed",
-            description: error?.message || "Please try again.",
+            title: "❌ Transcription failed",
+            description: errorMsg,
             variant: "destructive",
           });
         } finally {
@@ -197,23 +214,33 @@ const ReportIncident = () => {
         }
       };
 
-      mediaRecorder.start();
-      countdownIntervalRef.current = setInterval(() => {
-        setRecordingTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
-      }, 1000);
+      mediaRecorder.start(100); // Capture in 100ms chunks for better audio granularity
 
+      // Auto-stop only by max duration unless user manually stops.
       recordTimeoutRef.current = setTimeout(() => {
         if (mediaRecorder.state === "recording") {
           mediaRecorder.stop();
         }
       }, MAX_RECORD_SECONDS * 1000);
-    } catch {
+
+      // Update countdown timer
+      countdownIntervalRef.current = setInterval(() => {
+        setRecordingTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    } catch (err: any) {
       setVoiceStatus("error");
       clearVoiceTimers();
       setRecordingTimeLeft(MAX_RECORD_SECONDS);
+      
+      const errorMsg = err?.name === "NotAllowedError"
+        ? "Microphone access denied. Please allow permission and try again."
+        : err?.name === "NotFoundError"
+        ? "No microphone found. Please check your device."
+        : "Unable to access microphone. Check device and permissions.";
+      
       toast({
-        title: "Microphone access denied",
-        description: "Please allow microphone permission and try again.",
+        title: "❌ Microphone error",
+        description: errorMsg,
         variant: "destructive",
       });
     }
@@ -284,15 +311,15 @@ const ReportIncident = () => {
     // ─────────────────────────────────────────────────────────────────────
 
     const isHighPriority = ["medical", "rescue", "fire", "police"].includes(data.emergencyType);
+    const transcript = voiceText.trim();
 
-    const payload = {
+    const basePayload = {
       // Custom fields — exact column names from ServiceNow incident table
       u_caller_email:  data.email,
       u_caller_phone:  data.contactNumber,
       u_full_address:  data.location,
       u_gps_latitude:  data.latitude  ?? "",
       u_gps_longitude: data.longitude ?? "",
-      u_voice_script:  voiceText.trim(),
 
       // Built-in fields
       category:          data.emergencyType,
@@ -312,9 +339,8 @@ const ReportIncident = () => {
     };
 
     try {
-      const res = await fetch(
-        `${SN_INSTANCE}/api/now/table/incident`,
-        {
+      const createIncident = async (payload: Record<string, unknown>) => {
+        const res = await fetch(`${SN_INSTANCE}/api/now/table/incident`, {
           method: "POST",
           headers: {
             "Content-Type":  "application/json",
@@ -322,15 +348,23 @@ const ReportIncident = () => {
             "Authorization": "Basic " + btoa(`${SN_USERNAME}:${SN_PASSWORD}`),
           },
           body: JSON.stringify(payload),
-        }
-      );
+        });
 
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error(e?.error?.message ?? `HTTP ${res.status} ${res.statusText}`);
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({}));
+          throw new Error(e?.error?.message ?? `HTTP ${res.status} ${res.statusText}`);
+        }
+
+        return res.json();
+      };
+
+      // Always set transcript to u_voice_input column in ServiceNow
+      if (transcript) {
+        (basePayload as any).u_voice_input = transcript;
       }
 
-      const json       = await res.json();
+      const json = await createIncident(basePayload);
+
       const incidentId = json?.result?.number;
       const sysId      = json?.result?.sys_id;
 
