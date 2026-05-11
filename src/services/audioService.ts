@@ -39,15 +39,11 @@ export class AudioService {
    */
   static async requestMicrophoneAccess(): Promise<MediaStream> {
     try {
-      console.log("🎙️ [AudioService] Requesting microphone with advanced constraints...");
-
       // Try with full constraints
       try {
         const stream = await navigator.mediaDevices.getUserMedia(this.AUDIO_CONSTRAINTS);
-        console.log("✅ [AudioService] Microphone access granted with advanced constraints");
         return stream;
       } catch (err) {
-        console.warn("⚠️ [AudioService] Advanced constraints not supported, using basic constraints");
         // Fallback to basic constraints
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -61,7 +57,6 @@ export class AudioService {
         return stream;
       }
     } catch (err: any) {
-      console.error("❌ [AudioService] Microphone access denied:", err.message);
       throw new Error(`Microphone access denied: ${err.message}`);
     }
   }
@@ -74,8 +69,6 @@ export class AudioService {
     gainNode: GainNode;
     context: AudioContext;
   } {
-    console.log("🎧 [AudioService] Creating Web Audio API context...");
-
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     const source = audioContext.createMediaStreamSource(stream);
     const highpass = audioContext.createBiquadFilter();
@@ -101,7 +94,6 @@ export class AudioService {
     // Normalize audio levels
     gainNode.gain.value = 1.0;
 
-    console.log("✅ [AudioService] Web Audio API context created");
     return { analyser, gainNode, context: audioContext as any };
   }
 
@@ -157,8 +149,6 @@ export class AudioService {
    * Trim silence from audio data (frontend processing)
    */
   static trimSilence(audioData: Uint8Array, threshold: number = 30): Uint8Array {
-    console.log("✂️ [AudioService] Trimming silence from audio...");
-
     let startIndex = 0;
     let endIndex = audioData.length - 1;
 
@@ -178,7 +168,6 @@ export class AudioService {
       }
     }
 
-    console.log(`✂️ [AudioService] Trimmed ${startIndex} samples from start, ${audioData.length - endIndex} from end`);
     return audioData.slice(startIndex, endIndex + 1);
   }
 
@@ -196,12 +185,10 @@ export class AudioService {
 
     for (const type of types) {
       if (MediaRecorder.isTypeSupported(type)) {
-        console.log(`✅ [AudioService] Supported MIME type: ${type}`);
         return type;
       }
     }
 
-    console.warn("⚠️ [AudioService] No MIME type supported, using default");
     return "audio/webm";
   }
 
@@ -229,7 +216,6 @@ export class AudioService {
 
       audio.onloadedmetadata = () => {
         const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
-        console.log(`⏱️ [AudioService] Real audio duration: ${duration.toFixed(2)}s`);
         URL.revokeObjectURL(objectUrl);
         resolve(duration);
       };
@@ -247,8 +233,6 @@ export class AudioService {
    * Validate audio file before transcription
    */
   static validateAudioFile(blob: Blob): { valid: boolean; error?: string } {
-    console.log(`📊 [AudioService] Validating audio file: ${blob.size} bytes`);
-
     // Check file size (minimum 50KB for meaningful audio)
     if (blob.size < 50 * 1024) {
       return { valid: false, error: "Audio too quiet or too short" };
@@ -259,7 +243,6 @@ export class AudioService {
       return { valid: false, error: "Audio file too large (max 25MB). Try a shorter recording." };
     }
 
-    console.log(`✅ [AudioService] Audio file validation passed`);
     return { valid: true };
   }
 
@@ -281,10 +264,8 @@ export class AudioService {
    * Cleanup audio resources
    */
   static cleanupAudioStream(stream: MediaStream): void {
-    console.log("🧹 [AudioService] Cleaning up audio resources...");
     stream.getTracks().forEach((track) => {
       track.stop();
-      console.log(`🧹 [AudioService] Stopped track: ${track.label}`);
     });
   }
 

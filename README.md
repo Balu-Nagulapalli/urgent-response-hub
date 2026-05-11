@@ -58,6 +58,13 @@ A fully automated ServiceNow Flow Designer workflow that triggers on every new e
 5. **Critical cases** trigger email escalation automatically
 6. On **resolution**, notes are translated and final SMS is dispatched
 
+The user sees these status messages because the ServiceNow flow sends SMS updates when the incident state changes:
+
+- `Case INC0010050 is now IN PROGRESS. Our team is actively working on your emergency.`
+- `Case INC0010050 has been RESOLVED. DONE Thank you. Stay safe.`
+
+These messages are triggered automatically from the backend workflow, so the citizen gets a live progress update when the case moves to In Progress and a closure message when it is Resolved.
+
 ---
 
 ## 🏗️ System Architecture
@@ -105,6 +112,7 @@ A fully automated ServiceNow Flow Designer workflow that triggers on every new e
 - Instant acknowledgement SMS in citizen's preferred language
 - Resolution SMS with translated close notes
 - Supports 4 languages
+- State-based SMS alerts are sent automatically when the incident moves to `In Progress` and `Resolved`
 
 ### 🚨 Critical Escalation
 - Auto-email to assignment group for Critical severity

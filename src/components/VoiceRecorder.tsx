@@ -109,8 +109,7 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
       } else {
         await startRecording();
       }
-    } catch (err) {
-      console.error("Voice recorder error:", err);
+    } catch {
     }
   }, [isRecording, stopRecording, startRecording]);
 

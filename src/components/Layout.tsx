@@ -3,6 +3,7 @@ import EmergencyBanner from "./EmergencyBanner";
 import Header from "./Header";
 import Footer from "./Footer";
 import PanicButton from "./PanicButton";
+import VoiceWidget from "./VoiceWidget";
 
 interface LayoutProps {
   children: ReactNode;
@@ -25,11 +26,13 @@ const Layout = ({ children, hidePanicFloat = false }: LayoutProps) => {
 
       <Footer />
 
-      {/* ── Floating panic pill (Option A) ──────────────────────────────────
-          Shown on every page EXCEPT Home (which has its own hero version).
-          Rendered outside <main> so it floats above all content safely.
-      ─────────────────────────────────────────────────────────────────────── */}
+      {/* ── Floating panic pill — bottom-CENTER (Option A) ──────────────────
+          Hidden on Home page which has its own hero version               */}
       {!hidePanicFloat && <PanicButton variant="floating" />}
+
+      {/* ── Voice widget — bottom-RIGHT, all pages ──────────────────────────
+          Sits at right-6, panic pill sits at center — no overlap           */}
+      <VoiceWidget />
     </div>
   );
 };

@@ -13,6 +13,15 @@ type DistrictOption = {
 
 const slugify = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 
+const TEAM_USERNAME_PREFIX: Record<string, string> = {
+  control_room: "cr",
+  police_team: "police",
+  medical_team: "medical",
+  rescue_team: "rescue",
+  fire_team: "fire",
+  general_team: "general",
+};
+
 const DISTRICTS: DistrictOption[] = [
   { sys_id: "east-godavari", name: "East Godavari", districtId: "IST", slug: "eastgodavari" },
   { sys_id: "kakinada", name: "Kakinada", districtId: "KKD", slug: "kakinada" },
@@ -201,19 +210,38 @@ const AdminLogin = () => {
   const [error,    setError]    = useState("");
   const [selectedDistrict, setSelectedDistrict] = useState<DistrictOption | null>(null);
   const [showDistrictPicker, setShowDistrictPicker] = useState(false);
+  const [pendingTeamRole, setPendingTeamRole] = useState<string | null>(null);
 
   if (user) return <Navigate to={ROLE_DASHBOARD[user.role]} replace />;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim()) {
+    const trimmedUsername = username.trim();
+    const trimmedPassword = password.trim();
+
+    if (!trimmedUsername || !trimmedPassword) {
       setError("Please enter both username and password.");
       return;
     }
+
+    let authUsername = trimmedUsername;
+    const matchedTeamRole = TEAM_USERNAME_PREFIX[trimmedUsername] ? trimmedUsername : pendingTeamRole;
+
+    if (matchedTeamRole && matchedTeamRole !== "super_admin") {
+      if (!selectedDistrict) {
+        setError("Select a district first, then choose the team role.");
+        return;
+      }
+
+      const prefix = TEAM_USERNAME_PREFIX[matchedTeamRole];
+      authUsername = `${prefix}_${selectedDistrict.slug}`;
+      setUsername(authUsername);
+    }
+
     setLoading(true);
     setError("");
     try {
-      await login(username.trim(), password);
+      await login(authUsername, trimmedPassword);
       const stored = localStorage.getItem("auth_user");
       if (stored) {
         const u = JSON.parse(stored);
@@ -422,7 +450,23 @@ const AdminLogin = () => {
                     setShowDistrictPicker((current) => !current);
                     return;
                   }
-                  setUsername(t.id);
+                  if (t.id === "super_admin") {
+                    setPendingTeamRole(null);
+                    setShowDistrictPicker(false);
+                    setSelectedDistrict(null);
+                    setUsername("super_admin");
+                    return;
+                  }
+
+                  setPendingTeamRole(t.id);
+                  setShowDistrictPicker(true);
+
+                  if (selectedDistrict) {
+                    const prefix = TEAM_USERNAME_PREFIX[t.id];
+                    if (prefix) setUsername(`${prefix}_${selectedDistrict.slug}`);
+                  } else {
+                    setUsername("");
+                  }
                 }}
                 style={{ width: "100%", background: username === t.id ? t.hover : t.bg, border: `1px solid ${username === t.id ? t.accent : t.border}`, borderRadius: "10px", padding: "10px 12px", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: "10px", transition: "all 0.15s", outline: username === t.id ? `2px solid ${t.accent}` : "none", outlineOffset: "1px" }}>
                 <div style={{ color: t.accent, flexShrink: 0 }}>
@@ -467,7 +511,11 @@ const AdminLogin = () => {
                     type="button"
                     onClick={() => {
                       setSelectedDistrict(district);
-                      setUsername("");
+                      if (pendingTeamRole && TEAM_USERNAME_PREFIX[pendingTeamRole]) {
+                        setUsername(`${TEAM_USERNAME_PREFIX[pendingTeamRole]}_${district.slug}`);
+                      } else {
+                        setUsername("");
+                      }
                     }}
                     style={{
                       width: "100%",

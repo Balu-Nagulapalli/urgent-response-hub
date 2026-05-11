@@ -225,8 +225,9 @@ app.get("/api/sn/incidents/:sys_id/activity", async (req, res) => {
 });
 
 // ── POST /api/sn/auth/login ───────────────────────────────────
-// Called by AuthContext.tsx for district users (cr_kakinada etc.)
-// Hardcoded team users (control_room, police_team etc.) bypass this route
+// Authenticates ALL users: both team users (empty District) and district users
+// Team users stored in u_ers_users table with empty u_district field
+// Returns unified response with districtId="ALL" for team users
 app.post("/api/sn/auth/login", async (req, res) => {
   if (!snConfigured) return res.status(503).json({ error: "ServiceNow not configured" });
 
@@ -288,7 +289,14 @@ app.post("/api/sn/auth/login", async (req, res) => {
     let districtName = "";
 
     const districtRef = userRecord.u_district;
-    if (districtRef && typeof districtRef === "object" && districtRef.link) {
+    
+    // ── Team users (District = empty) get ALL districts ──────────────────────
+    if (!districtRef || (typeof districtRef === "object" && !districtRef.value)) {
+      districtId   = "ALL";
+      districtName = "All Districts";
+    }
+    // ── District users: fetch district details ──────────────────────────────
+    else if (districtRef && typeof districtRef === "object" && districtRef.link) {
       try {
         const distRes = await axios.get(
           `${districtRef.link}?sysparm_fields=u_district_id,u_name`,
@@ -304,6 +312,7 @@ app.post("/api/sn/auth/login", async (req, res) => {
       }
     }
 
+    // ── Super admin always sees all districts ───────────────────────────────
     if (role === "super_admin") {
       districtId   = "ALL";
       districtName = "All Districts";
@@ -363,8 +372,10 @@ app.post("/speech-to-text", upload.single("file"), async (req, res) => {
     console.log(`🎙️ [Server] File: ${req.file.originalname || "voice-input.webm"}`);
     console.log(`📦 [Server] Size: ${fileSizeKB} KB`);
     console.log(`🎧 [Server] MIME: ${mimeType}`);
+    console.log(`🔍 [Server] Buffer length: ${req.file.buffer.length}`);
 
     if (req.file.size <= 0) {
+      console.error("❌ [Server] Received empty file (size=0)");
       return res.status(422).json({
         error:   "Empty audio recording",
         code:    "empty_audio",
@@ -373,6 +384,7 @@ app.post("/speech-to-text", upload.single("file"), async (req, res) => {
     }
 
     if (!ALLOWED_MIME_TYPES.has(mimeType)) {
+      console.error(`❌ [Server] Unsupported MIME type: ${mimeType}`);
       return res.status(415).json({
         error:   "Unsupported audio format",
         code:    "unsupported_audio",
@@ -403,6 +415,8 @@ app.post("/speech-to-text", upload.single("file"), async (req, res) => {
     const groqResponse = await transcribeWithRetry(formData, headers);
     const text = String(groqResponse?.text || "").trim();
 
+    console.log(`🤖 [Server] Groq Response:`, JSON.stringify(groqResponse, null, 2).substring(0, 500));
+
     if (!text) {
       console.warn("⚠️ [Server] Groq returned empty transcript.");
       return res.status(422).json({
@@ -414,7 +428,7 @@ app.post("/speech-to-text", upload.single("file"), async (req, res) => {
 
     const totalDurationMs = Date.now() - requestStart;
     console.log(`✅ [Server] Transcription complete in ${totalDurationMs}ms`);
-    console.log(`📝 [Server] Transcript: ${text.substring(0, 120)}`);
+    console.log(`📝 [Server] Transcript: "${text}"`);
 
     return res.json({ text, durationMs: totalDurationMs, sizeKB: Number(fileSizeKB) });
 
@@ -423,7 +437,11 @@ app.post("/speech-to-text", upload.single("file"), async (req, res) => {
     const details = getGroqErrorMessage(err);
     const code    = status >= 500 ? "server_error" : "transcription_error";
 
-    console.error(`❌ [Server] Speech-to-text error (${status}): ${details}`);
+    console.error(`❌ [Server] Speech-to-text error (${status}):`, err.message);
+    console.error(`📋 [Server] Details:`, details);
+    if (err?.response?.data) {
+      console.error(`📊 [Server] Response body:`, JSON.stringify(err.response.data).substring(0, 500));
+    }
     return res.status(status).json({ error: "Error processing audio", code, details });
 
   } finally {

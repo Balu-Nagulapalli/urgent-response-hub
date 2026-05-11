@@ -226,7 +226,6 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
         return;
       }
 
-      console.log("▶️ [useVoiceInput] Starting recording...");
       audioChunksRef.current = [];
       recordedBytesRef.current = 0;
       setRecordingSizeKB(0);
@@ -241,7 +240,7 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
           (isSilent) => {
             setIsSilent(isSilent);
             if (isSilent && recordingTime > 2) {
-              console.warn("🔇 [useVoiceInput] Silence detected after 2 seconds of recording");
+              // silence detected after 2 seconds of recording
             }
           }
         );
@@ -249,7 +248,6 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
 
       mediaRecorderRef.current.start(RECORDING_TIMESLICE_MS);
     } catch (err: any) {
-      console.error("❌ [useVoiceInput] Failed to start recording:", err.message);
       setError(`Failed to start recording: ${err.message}`);
     }
   }, [initializeMicrophone, isProcessing, isRecording]);
@@ -258,15 +256,10 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
   const transcribeWithGROQ = useCallback(
     async (audioBlob: Blob, attempt: number = 1): Promise<string> => {
       try {
-        console.log(`📤 [useVoiceInput] Transcribing audio (attempt ${attempt}/${MAX_RETRY_ATTEMPTS})...`);
-
         const validation = AudioService.validateAudioFile(audioBlob);
         if (!validation.valid) {
           throw new Error(validation.error);
         }
-
-        console.log(`📊 [useVoiceInput] Recording duration: ${Date.now() - (recordingStartTimeRef.current ?? Date.now())}ms`);
-        console.log(`📊 [useVoiceInput] Audio blob size: ${audioBlob.size} bytes`);
 
         transcriptionAbortRef.current?.abort();
         transcriptionAbortRef.current = new AbortController();
@@ -276,18 +269,9 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
           onStageChange: (stage) => setProcessingStage(stage),
         });
 
-        console.log(`✅ [useVoiceInput] Transcription successful: "${result.text}"`);
         return result.text;
       } catch (err: any) {
-        console.error(
-          `❌ [useVoiceInput] Transcription failed (attempt ${attempt}):`,
-          err.message
-        );
-
         if (attempt < MAX_RETRY_ATTEMPTS && isRetryableTranscriptionError(err)) {
-          console.log(
-            `⏳ [useVoiceInput] Retrying in ${RETRY_DELAY}ms...`
-          );
           await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
           return transcribeWithGROQ(audioBlob, attempt + 1);
         }
@@ -309,7 +293,6 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
         return;
       }
 
-      console.log("⏹️ [useVoiceInput] Stopping recording...");
       isStoppingRef.current = true;
       setIsProcessing(true);
       setProcessingStage("uploading");
@@ -335,15 +318,6 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
       const realDurationSeconds = await AudioService.getAudioDuration(audioBlob).catch(() => 0);
       const safeDurationSeconds = realDurationSeconds > 0 ? realDurationSeconds : recordingDurationMs / 1000;
 
-      if (realDurationSeconds <= 0) {
-        console.warn(
-          `⚠️ [useVoiceInput] Browser metadata reported ${realDurationSeconds.toFixed(2)}s; using recording timer fallback.`
-        );
-      }
-
-      console.log(`📏 [useVoiceInput] Real audio duration: ${safeDurationSeconds.toFixed(2)}s`);
-      console.log(`📦 [useVoiceInput] Audio blob size: ${audioBlob.size} bytes`);
-
       if (DEBUG_PLAY_RAW_AUDIO) {
         void playRawAudioPreview(audioBlob);
       }
@@ -351,28 +325,16 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
       const uploadStart = performance.now();
       setProcessingStage("transcribing");
 
-      console.log(
-        `🚀 [useVoiceInput] Upload starting. Size: ${(audioBlob.size / 1024).toFixed(2)} KB`
-      );
-
       const uploadDuration = performance.now() - uploadStart;
-      console.log(`📤 [useVoiceInput] Upload stage completed in ${uploadDuration.toFixed(0)}ms`);
 
       const transcriptionStart = performance.now();
       const transcribedText = await transcribeWithGROQ(audioBlob);
       setTranscript(transcribedText);
       setProcessingTimeMs(performance.now() - processingStartedAtRef.current);
 
-      console.log(
-        `✅ [useVoiceInput] Recording and transcription complete in ${(performance.now() - processingStartedAtRef.current).toFixed(0)}ms`
-      );
-      console.log(
-        `📊 [useVoiceInput] Groq transcription duration: ${(performance.now() - transcriptionStart).toFixed(0)}ms`
-      );
     } catch (err: any) {
       const message = mapTranscriptionError(err);
 
-      console.error("❌ [useVoiceInput] Error stopping recording:", message);
       setError(message);
     } finally {
       setIsProcessing(false);
@@ -385,14 +347,12 @@ export function useVoiceInput(): VoiceInputState & VoiceInputActions {
 
   // ─── Clear Transcript ────────────────────────────────────────────────
   const clearTranscript = useCallback(() => {
-    console.log("🧹 [useVoiceInput] Clearing transcript");
     setTranscript("");
     setError("");
   }, []);
 
   // ─── Reset All State ────────────────────────────────────────────────
   const reset = useCallback(() => {
-    console.log("🔄 [useVoiceInput] Resetting all state");
     transcriptionAbortRef.current?.abort();
     setIsRecording(false);
     setIsProcessing(false);

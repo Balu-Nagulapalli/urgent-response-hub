@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:chart="urn:oasis:names:tc:opendocument:xmlns:chart:1.0" xmlns:dr3d="urn:oasis:names:tc:opendocument:xmlns:dr3d:1.0" xmlns:math="http://www.w3.org/1998/Math/MathML" xmlns:form="urn:oasis:names:tc:opendocument:xmlns:form:1.0" xmlns:script="urn:oasis:names:tc:opendocument:xmlns:script:1.0" xmlns:ooo="http://openoffice.org/2004/office" xmlns:ooow="http://openoffice.org/2004/writer" xmlns:oooc="http://openoffice.org/2004/calc" xmlns:dom="http://www.w3.org/2001/xml-events" xmlns:xforms="http://www.w3.org/2002/xforms" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" office:version="1.2">
+  <office:font-face-decls>
+    <style:font-face style:name="Courier New" style:font-family-generic="modern" style:font-pitch="fixed" svg:font-family="'Courier New'" />
+  </office:font-face-decls>
+  <office:automatic-styles>
+    <style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold" style:font-weight-asian="bold" style:font-weight-complex="bold" /></style:style>
+    <style:style style:name="fr2" style:family="graphic" style:parent-style-name="Formula"><style:graphic-properties style:vertical-pos="middle" style:vertical-rel="text" style:horizontal-pos="center" style:horizontal-rel="paragraph-content" style:wrap="none" /></style:style>
+    <style:style style:name="fr1" style:family="graphic" style:parent-style-name="Formula"><style:graphic-properties style:vertical-pos="middle" style:vertical-rel="text" /></style:style>
+  </office:automatic-styles>
+<office:body>
+<office:text>
+<text:p text:style-name="Text_20_body"><text:span text:style-name="T1">Business
+Rules</text:span></text:p>
+<text:p text:style-name="Text_20_body"><text:span text:style-name="T1">EMR
+Incident Auto-Routing</text:span></text:p>
+<text:p text:style-name="Text_20_body">  // STEP 1: AI
+Classification</text:p>
+<text:p text:style-name="Text_20_body">  var classifier = new
+EmergencyAIClassifier();</text:p>
+<text:p text:style-name="Text_20_body">  var result =
+classifier.classify(</text:p>
+<text:p text:style-name="Text_20_body">   
+current.short_description.toString(),</text:p>
+<text:p text:style-name="Text_20_body">   
+current.location.toString()</text:p>
+<text:p text:style-name="Text_20_body">  );</text:p>
+<text:p text:style-name="Text_20_body">  // STEP 2: Write AI results
+back to the incident</text:p>
+<text:p text:style-name="Text_20_body">  current.u_emergency_type    =
+result.type;</text:p>
+<text:p text:style-name="Text_20_body">  current.u_severity          =
+result.severity;</text:p>
+<text:p text:style-name="Text_20_body">  current.u_ai_summary        =
+result.summary;</text:p>
+<text:p text:style-name="Text_20_body">  current.u_ai_classification =
+JSON.stringify(result);</text:p>
+<text:p text:style-name="Text_20_body">  current.u_district          =
+result.district;</text:p>
+<text:p text:style-name="Text_20_body">  // Map severity to
+priority</text:p>
+<text:p text:style-name="Text_20_body">  var priorityMap = { Critical:
+1, High: 2, Medium: 3, Low: 4 };</text:p>
+<text:p text:style-name="Text_20_body">  current.priority =
+priorityMap[result.severity] || 3;</text:p>
+<text:p text:style-name="Text_20_body">  current.update();</text:p>
+<text:p text:style-name="Text_20_body">  // STEP 3: Route to correct
+officer</text:p>
+<text:p text:style-name="Text_20_body">  var router = new
+IncidentRouter();</text:p>
+<text:p text:style-name="Text_20_body">  router.assignOfficer(</text:p>
+<text:p text:style-name="Text_20_body">   
+current.sys_id.toString(),</text:p>
+<text:p text:style-name="Text_20_body">    result.district,</text:p>
+<text:p text:style-name="Text_20_body">    result.type</text:p>
+<text:p text:style-name="Text_20_body">  );</text:p>
+<text:p text:style-name="Text_20_body">  gs.info('EMR: ' +
+current.number +</text:p>
+<text:p text:style-name="Text_20_body">          ' → Type: ' +
+result.type +</text:p>
+<text:p text:style-name="Text_20_body">          ' | Severity: ' +
+result.severity +</text:p>
+<text:p text:style-name="Text_20_body">          ' | District: ' +
+result.district);</text:p>
+<text:p text:style-name="Text_20_body">})(current,
+previous);<text:line-break /><text:line-break /><text:line-break /><text:span text:style-name="T1">EMR
+SMS — On State Change</text:span></text:p>
+<text:p text:style-name="Text_20_body">(function executeRule(current,
+previous) {</text:p>
+<text:p text:style-name="Text_20_body">    try {</text:p>
+<text:p text:style-name="Text_20_body">        if
+(!current.state.changes()) return;</text:p>
+<text:p text:style-name="Text_20_body">        var phone    =
+current.getValue('u_caller_phone');</text:p>
+<text:p text:style-name="Text_20_body">        var caseNum  =
+current.getValue('number');</text:p>
+<text:p text:style-name="Text_20_body">        var newState =
+current.getValue('state');</text:p>
+<text:p text:style-name="Text_20_body">        if (!phone)
+return;</text:p>
+<text:p text:style-name="Text_20_body">        var msg     = new
+EMRSMSMessages();</text:p>
+<text:p text:style-name="Text_20_body">        var sms     = new
+TextBeeAPI();</text:p>
+<text:p text:style-name="Text_20_body">        var message =
+'';</text:p>
+<text:p text:style-name="Text_20_body">        if (newState === '2')
+{</text:p>
+<text:p text:style-name="Text_20_body">            message =
+msg.onInProgress(caseNum);</text:p>
+<text:p text:style-name="Text_20_body">        } else if (newState ===
+'6') {</text:p>
+<text:p text:style-name="Text_20_body">            var resolution =
+current.getValue('close_notes') || '';</text:p>
+<text:p text:style-name="Text_20_body">            message =
+msg.onResolved(caseNum, resolution);</text:p>
+<text:p text:style-name="Text_20_body">        } else if (newState ===
+'7') {</text:p>
+<text:p text:style-name="Text_20_body">            message =
+msg.onClosed(caseNum);</text:p>
+<text:p text:style-name="Text_20_body">        }</text:p>
+<text:p text:style-name="Text_20_body">        if (!message)
+return;</text:p>
+<text:p text:style-name="Text_20_body">        sms.sendSMS(phone,
+message, current.sys_id);</text:p>
+<text:p text:style-name="Text_20_body">        gs.info('State SMS sent.
+State: ' + newState + ' Case: ' + caseNum);</text:p>
+<text:p text:style-name="Text_20_body">    } catch(e) {</text:p>
+<text:p text:style-name="Text_20_body">        gs.error('StateChange SMS
+error: ' + e.message);</text:p>
+<text:p text:style-name="Text_20_body">    }</text:p>
+<text:p text:style-name="Text_20_body">})(current, previous);</text:p>
+<text:p text:style-name="Text_20_body"><text:span text:style-name="T1">EMR
+SMS Stage 1 — On Submit</text:span></text:p>
+<text:p text:style-name="Text_20_body">(function executeRule(current,
+previous) {</text:p>
+<text:p text:style-name="Text_20_body">    try {</text:p>
+<text:p text:style-name="Text_20_body">        var phone   =
+current.getValue('u_caller_phone');</text:p>
+<text:p text:style-name="Text_20_body">        var caseNum =
+current.getValue('number');</text:p>
+<text:p text:style-name="Text_20_body">        var eType   =
+current.getValue('category') || 'Emergency';</text:p>
+<text:p text:style-name="Text_20_body">        if (!phone) {</text:p>
+<text:p text:style-name="Text_20_body">            gs.warn('Stage1 SMS:
+No phone on case ' + caseNum);</text:p>
+<text:p text:style-name="Text_20_body">            return;</text:p>
+<text:p text:style-name="Text_20_body">        }</text:p>
+<text:p text:style-name="Text_20_body">        var msg = new
+EMRSMSMessages();</text:p>
+<text:p text:style-name="Text_20_body">        var sms = new
+TextBeeAPI();</text:p>
+<text:p text:style-name="Text_20_body">        sms.sendSMS(phone,
+msg.onSubmit(caseNum, eType), current.sys_id);</text:p>
+<text:p text:style-name="Text_20_body">        gs.info('Stage 1 SMS sent
+for case ' + caseNum);</text:p>
+<text:p text:style-name="Text_20_body">    } catch(e) {</text:p>
+<text:p text:style-name="Text_20_body">        gs.error('Stage1 SMS
+error: ' + e.message);</text:p>
+<text:p text:style-name="Text_20_body">    }</text:p>
+<text:p text:style-name="Text_20_body">})(current, previous);</text:p>
+<text:p text:style-name="Text_20_body"><text:span text:style-name="T1">ERS
+District Auto Router</text:span></text:p>
+<text:p text:style-name="Text_20_body">(function executeRule(current,
+previous) {</text:p>
+<text:p text:style-name="Text_20_body">    // ── District boundary boxes
+(lat/lng ranges) ──────────────</text:p>
+<text:p text:style-name="Text_20_body">var DISTRICTS = [</text:p>
+<text:p text:style-name="Text_20_body">    {</text:p>
+<text:p text:style-name="Text_20_body">        id:     'KKD',</text:p>
+<text:p text:style-name="Text_20_body">        name:  
+'Kakinada',</text:p>
+<text:p text:style-name="Text_20_body">        latMin: 16.80,</text:p>
+<text:p text:style-name="Text_20_body">        latMax: 17.20,</text:p>
+<text:p text:style-name="Text_20_body">        lngMin: 81.90,      // ←
+Lower this to 81.90 (covers Kakinada city)</text:p>
+<text:p text:style-name="Text_20_body">        lngMax: 82.60</text:p>
+<text:p text:style-name="Text_20_body">    },</text:p>
+<text:p text:style-name="Text_20_body">    {</text:p>
+<text:p text:style-name="Text_20_body">        id:    
+'DG-EAST',</text:p>
+<text:p text:style-name="Text_20_body">        name:   'East
+Godavari',</text:p>
+<text:p text:style-name="Text_20_body">        latMin: 16.50,</text:p>
+<text:p text:style-name="Text_20_body">        latMax: 17.50,</text:p>
+<text:p text:style-name="Text_20_body">        lngMin: 81.50,</text:p>
+<text:p text:style-name="Text_20_body">        lngMax: 81.90       // ←
+End where Kakinada starts</text:p>
+<text:p text:style-name="Text_20_body">    },</text:p>
+<text:p text:style-name="Text_20_body">    {</text:p>
+<text:p text:style-name="Text_20_body">        id:    
+'DG-WEST',</text:p>
+<text:p text:style-name="Text_20_body">        name:   'West
+Godavari',</text:p>
+<text:p text:style-name="Text_20_body">        latMin: 16.40,</text:p>
+<text:p text:style-name="Text_20_body">        latMax: 17.20,</text:p>
+<text:p text:style-name="Text_20_body">        lngMin: 80.60,</text:p>
+<text:p text:style-name="Text_20_body">        lngMax: 81.50</text:p>
+<text:p text:style-name="Text_20_body">    }</text:p>
+<text:p text:style-name="Text_20_body">];</text:p>
+<text:p text:style-name="Text_20_body">    // ── Read lat/lng from the
+incident record ─────────────────</text:p>
+<text:p text:style-name="Text_20_body">    var lat =
+parseFloat(current.u_gps_latitude.toString());</text:p>
+<text:p text:style-name="Text_20_body">    var lng =
+parseFloat(current.u_gps_longitude.toString());</text:p>
+<text:p text:style-name="Text_20_body">    // ── Validate coordinates
+exist ────────────────────────────</text:p>
+<text:p text:style-name="Text_20_body">    if (isNaN(lat) || isNaN(lng))
+{</text:p>
+<text:p text:style-name="Text_20_body">        gs.log('ERS AutoRouter:
+No coordinates found on incident '</text:p>
+<text:p text:style-name="Text_20_body">               + current.number,
+'ERS');</text:p>
+<text:p text:style-name="Text_20_body">        return;</text:p>
+<text:p text:style-name="Text_20_body">    }</text:p>
+<text:p text:style-name="Text_20_body">    // ── Match coordinates to a
+district ──────────────────────</text:p>
+<text:p text:style-name="Text_20_body">    var matchedDistrict =
+null;</text:p>
+<text:p text:style-name="Text_20_body">    for (var i = 0; i &lt;
+DISTRICTS.length; i++) {</text:p>
+<text:p text:style-name="Text_20_body">        var d =
+DISTRICTS[i];</text:p>
+<text:p text:style-name="Text_20_body">        if (lat &gt;= d.latMin
+&amp;&amp; lat &lt;= d.latMax &amp;&amp;</text:p>
+<text:p text:style-name="Text_20_body">            lng &gt;= d.lngMin
+&amp;&amp; lng &lt;= d.lngMax) {</text:p>
+<text:p text:style-name="Text_20_body">            matchedDistrict =
+d;</text:p>
+<text:p text:style-name="Text_20_body">            break;</text:p>
+<text:p text:style-name="Text_20_body">        }</text:p>
+<text:p text:style-name="Text_20_body">    }</text:p>
+<text:p text:style-name="Text_20_body">    // ── Fallback: find nearest
+district if no exact match ────</text:p>
+<text:p text:style-name="Text_20_body">    if (!matchedDistrict)
+{</text:p>
+<text:p text:style-name="Text_20_body">        var minDistance =
+Infinity;</text:p>
+<text:p text:style-name="Text_20_body">        for (var j = 0; j &lt;
+DISTRICTS.length; j++) {</text:p>
+<text:p text:style-name="Text_20_body">            var d2    =
+DISTRICTS[j];</text:p>
+<text:p text:style-name="Text_20_body">            var cLat  =
+(d2.latMin + d2.latMax) / 2;</text:p>
+<text:p text:style-name="Text_20_body">            var cLng  =
+(d2.lngMin + d2.lngMax) / 2;</text:p>
+<text:p text:style-name="Text_20_body">            var dist  =
+Math.sqrt(</text:p>
+<text:p text:style-name="Text_20_body">                           
+Math.pow(lat - cLat, 2) +</text:p>
+<text:p text:style-name="Text_20_body">                           
+Math.pow(lng - cLng, 2)</text:p>
+<text:p text:style-name="Text_20_body">                       
+);</text:p>
+<text:p text:style-name="Text_20_body">            if (dist &lt;
+minDistance) {</text:p>
+<text:p text:style-name="Text_20_body">                minDistance    
+ = dist;</text:p>
+<text:p text:style-name="Text_20_body">                matchedDistrict
+ = d2;</text:p>
+<text:p text:style-name="Text_20_body">            }</text:p>
+<text:p text:style-name="Text_20_body">        }</text:p>
+<text:p text:style-name="Text_20_body">        gs.log('ERS AutoRouter:
+Coords (' + lat + ',' + lng +</text:p>
+<text:p text:style-name="Text_20_body">               ') outside all
+boundaries. Nearest: ' +</text:p>
+<text:p text:style-name="Text_20_body">             
+ matchedDistrict.name, 'ERS');</text:p>
+<text:p text:style-name="Text_20_body">    }</text:p>
+<text:p text:style-name="Text_20_body">    // ── Look up the u_districts
+record by District ID ────────</text:p>
+<text:p text:style-name="Text_20_body">    var distGR = new
+GlideRecord('u_districts');</text:p>
+<text:p text:style-name="Text_20_body">   
+distGR.addQuery('u_district_id', matchedDistrict.id);</text:p>
+<text:p text:style-name="Text_20_body">    distGR.query();</text:p>
+<text:p text:style-name="Text_20_body">    if (distGR.next()) {</text:p>
+<text:p text:style-name="Text_20_body">        // Set the District
+reference field on the incident</text:p>
+<text:p text:style-name="Text_20_body">        current.u_district =
+distGR.sys_id;</text:p>
+<text:p text:style-name="Text_20_body">        gs.log('ERS AutoRouter:
+Incident ' + current.number +</text:p>
+<text:p text:style-name="Text_20_body">               ' routed to ' +
+matchedDistrict.name, 'ERS');</text:p>
+<text:p text:style-name="Text_20_body">    } else {</text:p>
+<text:p text:style-name="Text_20_body">        gs.log('ERS AutoRouter:
+District record not found for ' +</text:p>
+<text:p text:style-name="Text_20_body">             
+ matchedDistrict.id, 'ERS');</text:p>
+<text:p text:style-name="Text_20_body">    }</text:p>
+<text:p text:style-name="Text_20_body">})(current, previous);</text:p>
+</office:text>
+</office:body>
+</office:document-content>
