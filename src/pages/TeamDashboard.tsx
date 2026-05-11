@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useAuth, ROLE_CATEGORY, UserRole } from "../AuthContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { getIncidents, getIncidentActivity, updateIncident, ServiceNowActivityRecord, ServiceNowIncidentRecord } from "@/services/api";
 import {
   RefreshCw, MapPin, Phone, Mail, Loader2, Activity,
   CheckCircle, Clock, LogOut, AlertTriangle, ShieldAlert,
@@ -43,7 +44,7 @@ interface ActivityEntry {
 
 // ─── Permissions ────────────────────────────────────────────────────────────
 const canChangePriority = (role: UserRole): boolean =>
-  role === "control_room_admin";
+  role === "control_room" || role === "super_admin";
 
 const canChangeState = (_role: UserRole): boolean => true; // all roles
 
@@ -51,30 +52,33 @@ const canAddNotes = (_role: UserRole): boolean => true; // all roles
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 const ROLE_COLORS: Record<UserRole, string> = {
-  control_room_admin: "bg-purple-700",
+  control_room: "bg-purple-700",
   police_team:        "bg-blue-700",
   medical_team:       "bg-red-700",
   fire_team:          "bg-amber-700",
   rescue_team:        "bg-orange-700",
   general_team:       "bg-gray-700",
+  super_admin:        "bg-slate-900",
 };
 
 const ROLE_EMOJI: Record<UserRole, string> = {
-  control_room_admin: "🎛️",
+  control_room: "🎛️",
   police_team:        "👮",
   medical_team:       "🏥",
   fire_team:          "🔥",
   rescue_team:        "🚨",
   general_team:       "👥",
+  super_admin:        "",
 };
 
 const ROLE_NAME: Record<UserRole, string> = {
-  control_room_admin: "Control Room",
+  control_room: "Control Room",
   police_team:        "Police Team",
   medical_team:       "Medical Team",
   fire_team:          "Fire Team",
   rescue_team:        "Rescue Team",
   general_team:       "General Team",
+  super_admin:        "Super Admin",
 };
 
 const CATEGORY_EMOJI: Record<string, string> = {
@@ -115,10 +119,20 @@ const formatDate = (dateStr: string): string => {
   }).format(new Date(utcStr));
 };
 
-const buildQueryFilter = (role: UserRole): string => {
+const buildQueryFilter = (role: UserRole, districtId?: string): string => {
   const category = ROLE_CATEGORY[role];
+
+  // District filter — skip if super_admin or no district
+  const districtFilter =
+    districtId && districtId !== "ALL"
+      ? `u_district.u_district_id=${districtId}^`
+      : "";
+
   const baseFilter = "u_full_addressISNOTEMPTY^ORDERBYDESCopened_at";
-  return category ? `category=${category}^${baseFilter}` : baseFilter;
+
+  return category
+    ? `${districtFilter}category=${category}^${baseFilter}`
+    : `${districtFilter}${baseFilter}`;
 };
 
 const getStats = (incidents: Incident[]): Stats => ({
@@ -129,8 +143,6 @@ const getStats = (incidents: Incident[]): Stats => ({
   closed:     incidents.filter((i) => i.state === "7").length,
 });
 
-const snAuth = () =>
-  "Basic " + btoa(`${import.meta.env.VITE_SN_USERNAME}:${import.meta.env.VITE_SN_PASSWORD}`);
 
 // ─── Component ─────────────────────────────────────────────────────────────
 export default function TeamDashboard() {
@@ -153,16 +165,13 @@ export default function TeamDashboard() {
     setLoading(true);
     setError(null);
     try {
-      const SN = import.meta.env.VITE_SN_INSTANCE;
-      if (!SN) throw new Error("VITE_SN_INSTANCE is not configured.");
-      const query = buildQueryFilter(user.role);
-      const res = await fetch(
-        `${SN}/api/now/table/incident?sysparm_query=${encodeURIComponent(query)}&sysparm_fields=sys_id,number,short_description,description,category,state,priority,u_caller_email,u_caller_phone,u_full_address,u_gps_latitude,u_gps_longitude,opened_at,work_notes&sysparm_limit=100`,
-        { headers: { Accept: "application/json", Authorization: snAuth() } }
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setIncidents(data.result || []);
+      const query = buildQueryFilter(user.role, user.districtId);
+      const { data } = await getIncidents<ServiceNowIncidentRecord[]>({
+        sysparm_query: query,
+        sysparm_fields: "sys_id,number,short_description,description,category,state,priority,u_caller_email,u_caller_phone,u_full_address,u_gps_latitude,u_gps_longitude,opened_at,work_notes",
+        sysparm_limit: 100,
+      });
+      setIncidents((data.result || []) as Incident[]);
       setActivity([]);
       setSelectedIncident(null);
     } catch (err) {
@@ -175,12 +184,8 @@ export default function TeamDashboard() {
   const fetchActivity = async (sys_id: string) => {
     setActivityLoading(true);
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_SN_INSTANCE}/api/now/table/sys_journal_field?sysparm_query=element_id=${sys_id}^element=work_notes^ORelement=comments&sysparm_fields=value,sys_created_by,sys_created_on,element&sysparm_orderby=sys_created_ondesc&sysparm_limit=50`,
-        { headers: { Accept: "application/json", Authorization: "Basic " + btoa(`${import.meta.env.VITE_SN_USERNAME}:${import.meta.env.VITE_SN_PASSWORD}`) }}
-      );
-      const d = await res.json();
-      setActivity(d.result || []);
+      const { data: d } = await getIncidentActivity<ServiceNowActivityRecord[]>(sys_id);
+      setActivity((d.result || []) as ActivityEntry[]);
     } catch {
       setActivity([]);
     } finally {
@@ -205,15 +210,8 @@ export default function TeamDashboard() {
 
   // ─ Patch helper ─────────────────────────────────────────────────────────
   const patchIncident = async (sys_id: string, body: object) => {
-    const SN = import.meta.env.VITE_SN_INSTANCE;
-    const auth = "Basic " + (localStorage.getItem("auth_token") || "");
-    const res = await fetch(`${SN}/api/now/table/incident/${sys_id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: auth },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()).result as Incident;
+    const { data } = await updateIncident(sys_id, body, user?.username);
+    return data.result as Incident;
   };
 
   const updateLocal = (updated: Incident) => {
@@ -269,25 +267,7 @@ export default function TeamDashboard() {
     if (!selectedIncident || !workNoteInput.trim() || !user || !canAddNotes(user.role)) return;
     setSavingNote(true);
     try {
-      const SN = import.meta.env.VITE_SN_INSTANCE;
-      const auth = "Basic " + (localStorage.getItem("auth_token") || "");
-
-      const res = await fetch(
-        `${SN}/api/now/table/incident/${selectedIncident.sys_id}`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: auth,
-            "X-no-response-body": "false",
-          },
-          body: JSON.stringify({
-            work_notes: workNoteInput,
-          }),
-        }
-      );
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await updateIncident(selectedIncident.sys_id, { work_notes: workNoteInput }, user.username);
 
       const updated = {
         ...selectedIncident,
@@ -357,9 +337,9 @@ export default function TeamDashboard() {
             <div>
               <h1 className="text-xl font-bold leading-tight">{ROLE_NAME[user.role]}</h1>
               <p className="text-xs opacity-70">
-                {ROLE_CATEGORY[user.role]
-                  ? `Viewing: ${ROLE_CATEGORY[user.role]} incidents`
-                  : "Viewing: all incidents"}
+                {user.districtName
+                  ? `${user.districtName} · ${ROLE_NAME[user.role]}`
+                  : ROLE_NAME[user.role]}
               </p>
             </div>
           </div>
@@ -371,7 +351,10 @@ export default function TeamDashboard() {
                   <ShieldAlert className="h-3 w-3" /> Priority Control
                 </span>
               )}
-              <span className="bg-white/20 px-2 py-1 rounded-full">
+              <span className="bg-white/20 px-2 py-1 rounded-full flex items-center gap-1">
+                {user.districtName && (
+                  <span className="opacity-70">{user.districtName} ·</span>
+                )}
                 {user.displayName}
               </span>
             </div>

@@ -8,6 +8,7 @@ import Layout from "@/components/Layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { getIncidents, getIncidentActivity } from "@/services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,11 +28,27 @@ interface IncidentData {
   submittedAt:   string;
 }
 
+interface ServiceNowIncidentRecord {
+  number?: string;
+  state?: string;
+  sys_id?: string;
+  u_caller_email?: string;
+  u_caller_phone?: string;
+  u_full_address?: string;
+  u_gps_latitude?: string;
+  u_gps_longitude?: string;
+  category?: string;
+  short_description?: string;
+  description?: string;
+  priority?: string;
+  opened_at?: string;
+}
+
 interface ActivityEntry {
-  value: string;
+  value:          string;
   sys_created_by: string;
   sys_created_on: string;
-  element: "work_notes" | "comments";
+  element:        "work_notes" | "comments";
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -45,7 +62,7 @@ const EMERGENCY_LABELS: Record<string, string> = {
 };
 
 const PRIORITY_STYLES: Record<string, { label: string; className: string }> = {
-  high:   { label: "High Priority",   className: "bg-red-100 text-red-700" },
+  high:   { label: "High Priority",   className: "bg-red-100 text-red-700"     },
   medium: { label: "Medium Priority", className: "bg-amber-100 text-amber-700" },
   low:    { label: "Standard",        className: "bg-muted text-muted-foreground" },
 };
@@ -54,6 +71,67 @@ const STATUS_CONFIG = {
   pending:  { label: "Request Received", icon: Clock,         color: "bg-amber-500" },
   active:   { label: "Help On The Way",  icon: AlertTriangle, color: "bg-blue-500"  },
   resolved: { label: "Resolved",         icon: CheckCircle,   color: "bg-green-500" },
+};
+
+// ─── Role mapping ─────────────────────────────────────────────────────────────
+const SN_ROLE_MAP: Record<string, string> = {
+  "100": "super_admin",
+  "200": "police_team",
+  "300": "fire_team",
+  "400": "control_room",
+  "500": "rescue_team",
+  "600": "medical_team",
+  "super_admin":  "super_admin",
+  "police_team":  "police_team",
+  "fire_team":    "fire_team",
+  "control_room": "control_room",
+  "rescue_team":  "rescue_team",
+  "medical_team": "medical_team",
+};
+
+const ROLE_DISPLAY_NAME: Record<string, string> = {
+  "super_admin":  "Super Admin",
+  "police_team":  "Police Team",
+  "fire_team":    "Fire Team",
+  "control_room": "Control Room",
+  "rescue_team":  "Rescue Team",
+  "medical_team": "Medical Team",
+  "general_team": "General Team",
+};
+
+const DISTRICT_DISPLAY: Record<string, string> = {
+  "eastgodavari":  "East Godavari",
+  "kakinada":      "Kakinada",
+  "westgodavari":  "West Godavari",
+};
+
+// ─── Username prefix to role mapping ───────────────────────────────────────────
+const PREFIX_TO_ROLE: Record<string, string> = {
+  "cr":      "Control Room",
+  "police":  "Police",
+  "medical": "Medical",
+  "rescue":  "Rescue",
+  "fire":    "Fire",
+};
+
+const formatRoleWithDistrict = (username: string, role: string): string => {
+  // If super_admin, show "Super Admin (All Districts)"
+  if (username === "super_admin") {
+    return "Super Admin (All Districts)";
+  }
+  
+  // For district-based roles like "police_eastgodavari", "medical_kakinada"
+  const parts = username.toLowerCase().split("_");
+  if (parts.length >= 2) {
+    const prefix = parts[0];
+    const districtSlug = parts.slice(1).join("_");
+    const districtName = DISTRICT_DISPLAY[districtSlug] || districtSlug;
+    const roleLabel = PREFIX_TO_ROLE[prefix] || "Team";
+    return `${roleLabel} (${districtName})`;
+  }
+  
+  // Fallback: return formatted username
+  return formatTeamName(username);
 };
 
 const TIMELINE = [
@@ -67,51 +145,46 @@ const formatDateIST = (dateStr: string): string => {
   const parsed = dateStr.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(dateStr)
     ? new Date(dateStr)
     : new Date(`${dateStr}Z`);
-
   return new Intl.DateTimeFormat("en-IN", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Asia/Kolkata",
+    dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata",
   }).format(parsed);
 };
 
 const formatTeamName = (username: string): string => {
   if (!username) return "Team";
-  return username
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+  return username.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+// ─── Extract username from bracketed work note ───────────────────────────────
+const extractUsernameFromNote = (noteValue: string): string | null => {
+  const match = noteValue.match(/^\[([^\]]+)\]\s*/);
+  return match ? match[1] : null;
 };
 
 // ─── ServiceNow state map ─────────────────────────────────────────────────────
-// ServiceNow incident state field values:
-// 1 = New → pending | 2 = In Progress → active | 6 = Resolved → resolved
+
 const SN_STATE_MAP: Record<string, IncidentData["status"]> = {
-  "1": "pending",
-  "2": "active",
-  "3": "active",
-  "6": "resolved",
-  "7": "resolved",
+  "1": "pending", "2": "active", "3": "active", "6": "resolved", "7": "resolved",
 };
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const Status = () => {
-  const [searchParams]                  = useSearchParams();
-  const [incidentId,    setIncidentId]  = useState(searchParams.get("id") ?? "");
-  const [incident,      setIncident]    = useState<IncidentData | null>(null);
-  const [updates,       setUpdates]     = useState<ActivityEntry[]>([]);
-  const [isSearching,   setIsSearching] = useState(false);
-  const [notFound,      setNotFound]    = useState(false);
-  const [isFetchingLive, setIsFetchingLive] = useState(false);
-  const [updatesLoading, setUpdatesLoading] = useState(false);
+  const [searchParams]                      = useSearchParams();
+  const [incidentId,      setIncidentId]    = useState(searchParams.get("id") ?? "");
+  const [incident,        setIncident]      = useState<IncidentData | null>(null);
+  const [updates,         setUpdates]       = useState<ActivityEntry[]>([]);
+  const [isSearching,     setIsSearching]   = useState(false);
+  const [notFound,        setNotFound]      = useState(false);
+  const [isFetchingLive,  setIsFetchingLive]= useState(false);
+  const [updatesLoading,  setUpdatesLoading]= useState(false);
 
-  // Auto-search when arriving from the form with ?id=INC...
   useEffect(() => {
     const id = searchParams.get("id");
     if (id) handleSearch(id);
   }, [searchParams]);
 
-  // ── Search ─────────────────────────────────────────────────────────────────
+  // ── Search ──────────────────────────────────────────────────────────────────
 
   const handleSearch = async (id?: string) => {
     const searchId = (id ?? incidentId).trim();
@@ -122,7 +195,6 @@ const Status = () => {
     setIncident(null);
     setUpdates([]);
 
-    // Step 1: load from localStorage (instant, populated right after submission)
     const stored = localStorage.getItem("lastIncident");
     if (stored) {
       try {
@@ -130,54 +202,30 @@ const Status = () => {
         if (parsed.id === searchId) {
           setIncident(parsed as IncidentData);
           setIsSearching(false);
-          // Step 2: also fetch live status from ServiceNow in background
           if (parsed.sys_id) fetchActivity(parsed.sys_id);
           fetchLiveStatus(searchId, parsed.sys_id);
           return;
         }
-      } catch { /* bad JSON — ignore */ }
+      } catch { /* bad JSON */ }
     }
 
-    // Step 3: if not in localStorage, try ServiceNow directly
-    const found = await fetchFromServiceNow(searchId);
+    const found = await fetchFromServiceNowWithFallback(searchId);
     if (!found) setNotFound(true);
     setIsSearching(false);
   };
 
-  // ── Live status fetch from ServiceNow ──────────────────────────────────────
+  // ── Live status ─────────────────────────────────────────────────────────────
 
   const fetchLiveStatus = async (incNumber: string, sysId?: string) => {
     setIsFetchingLive(true);
     try {
-      const SN_INSTANCE = import.meta.env.VITE_SN_INSTANCE;
-      const SN_USERNAME = import.meta.env.VITE_SN_USERNAME;
-      const SN_PASSWORD = import.meta.env.VITE_SN_PASSWORD;
-      const auth        = "Basic " + btoa(`${SN_USERNAME}:${SN_PASSWORD}`);
-
-      // Query by sys_id if available (faster), else by number
-      const query = sysId
-        ? `sys_id=${sysId}`
-        : `number=${incNumber}`;
-
-      const res = await fetch(
-        `${SN_INSTANCE}/api/now/table/incident?${query}&sysparm_fields=number,state,sys_id,u_caller_email,u_caller_phone,u_full_address,u_gps_latitude,u_gps_longitude,category,short_description,description,priority,opened_at&sysparm_limit=1`,
-        { headers: { Accept: "application/json", Authorization: auth } }
-      );
-
-      if (!res.ok) return;
-
-      const json   = await res.json();
-      const record = json?.result?.[0];
+      const query = sysId ? `sys_id=${sysId}` : `number=${incNumber}`;
+      const { data } = await getIncidents({ sysparm_query: query, sysparm_fields: "number,state,sys_id", sysparm_limit: 1 });
+      const record = data?.result?.[0] as ServiceNowIncidentRecord | undefined;
       if (!record) return;
-
-      // Map live state back to our status
-      const liveStatus = SN_STATE_MAP[record.state] ?? "pending";
-
-      // Update local incident with latest state from ServiceNow
+      const liveStatus = SN_STATE_MAP[record.state ?? ""] ?? "pending";
       setIncident((prev) => prev ? { ...prev, status: liveStatus, sys_id: record.sys_id ?? prev.sys_id } : prev);
-      fetchActivity(record.sys_id);
-
-      // Also update localStorage
+      if (record.sys_id) fetchActivity(record.sys_id);
       const stored = localStorage.getItem("lastIncident");
       if (stored) {
         try {
@@ -185,31 +233,23 @@ const Status = () => {
           localStorage.setItem("lastIncident", JSON.stringify({ ...parsed, status: liveStatus, sys_id: record.sys_id ?? parsed.sys_id }));
         } catch { /* ignore */ }
       }
-    } catch { /* silently fail — local data still shows */ }
+    } catch { /* silently fail */ }
     finally { setIsFetchingLive(false); }
   };
 
-  // ── Fetch directly from ServiceNow (when not in localStorage) ──────────────
+  // ── Fetch from ServiceNow ───────────────────────────────────────────────────
 
   const fetchFromServiceNow = async (incNumber: string): Promise<boolean> => {
     try {
-      const SN_INSTANCE = import.meta.env.VITE_SN_INSTANCE;
-      const SN_USERNAME = import.meta.env.VITE_SN_USERNAME;
-      const SN_PASSWORD = import.meta.env.VITE_SN_PASSWORD;
-      const auth        = "Basic " + btoa(`${SN_USERNAME}:${SN_PASSWORD}`);
-
-      const res = await fetch(
-        `${SN_INSTANCE}/api/now/table/incident?number=${incNumber}&sysparm_fields=number,state,u_caller_email,u_caller_phone,u_full_address,u_gps_latitude,u_gps_longitude,category,short_description,description,priority,opened_at&sysparm_limit=1`,
-        { headers: { Accept: "application/json", Authorization: auth } }
-      );
-
-      if (!res.ok) return false;
-
-      const json   = await res.json();
-      const record = json?.result?.[0];
+      const { data } = await getIncidents({
+        sysparm_query: `number=${incNumber}`,
+        sysparm_fields: "number,state,sys_id,u_caller_email,u_caller_phone,u_full_address,u_gps_latitude,u_gps_longitude,category,short_description,description,priority,opened_at",
+        sysparm_limit: 1,
+      });
+      const record = data?.result?.[0] as ServiceNowIncidentRecord | undefined;
       if (!record) return false;
 
-      const liveStatus = SN_STATE_MAP[record.state] ?? "pending";
+      const liveStatus = SN_STATE_MAP[record.state ?? ""] ?? "pending";
       const snPriority = record.priority === "1" || record.priority === "2" ? "high"
                        : record.priority === "3" ? "medium" : "low";
 
@@ -228,42 +268,62 @@ const Status = () => {
         priority:      snPriority,
         submittedAt:   record.opened_at         ?? new Date().toISOString(),
       });
-      fetchActivity(record.sys_id);
+      if (record.sys_id) fetchActivity(record.sys_id);
       return true;
     } catch { return false; }
   };
-
-  const fetchActivity = async (sysId?: string) => {
-    if (!sysId) return;
-
-    setUpdatesLoading(true);
+  
+  // Fallback: sometimes user may paste a sys_id instead of the incident number
+  // Try sys_id lookup if number lookup fails
+  const fetchFromServiceNowWithFallback = async (incNumber: string): Promise<boolean> => {
+    const found = await fetchFromServiceNow(incNumber);
+    if (found) return true;
     try {
-      const SN_INSTANCE = import.meta.env.VITE_SN_INSTANCE;
-      const SN_USERNAME = import.meta.env.VITE_SN_USERNAME;
-      const SN_PASSWORD = import.meta.env.VITE_SN_PASSWORD;
-      const auth        = "Basic " + btoa(`${SN_USERNAME}:${SN_PASSWORD}`);
+      const { data } = await getIncidents({ sysparm_query: `sys_id=${incNumber}`, sysparm_limit: 1 });
+      const record = data?.result?.[0] as ServiceNowIncidentRecord | undefined;
+      if (!record) return false;
+      const liveStatus = SN_STATE_MAP[record.state ?? ""] ?? "pending";
+      const snPriority = record.priority === "1" || record.priority === "2" ? "high"
+                       : record.priority === "3" ? "medium" : "low";
 
-      const res = await fetch(
-        `${SN_INSTANCE}/api/now/table/sys_journal_field?sysparm_query=element_id=${sysId}^element=work_notes^ORelement=comments&sysparm_fields=value,sys_created_by,sys_created_on,element&sysparm_orderby=sys_created_ondesc&sysparm_limit=50`,
-        { headers: { Accept: "application/json", Authorization: auth } }
-      );
-
-      if (!res.ok) return;
-
-      const json = await res.json();
-      setUpdates((json?.result || []) as ActivityEntry[]);
+      setIncident({
+        id:            record.number,
+        sys_id:        record.sys_id,
+        fullName:      record.short_description ?? "—",
+        email:         record.u_caller_email    ?? "—",
+        contactNumber: record.u_caller_phone    ?? "—",
+        emergencyType: record.category          ?? "others",
+        location:      record.u_full_address    ?? "—",
+        latitude:      record.u_gps_latitude    ?? "",
+        longitude:     record.u_gps_longitude   ?? "",
+        description:   record.description       ?? "",
+        status:        liveStatus,
+        priority:      snPriority,
+        submittedAt:   record.opened_at         ?? new Date().toISOString(),
+      });
+      if (record.sys_id) fetchActivity(record.sys_id);
+      return true;
     } catch {
-      setUpdates([]);
-    } finally {
-      setUpdatesLoading(false);
+      return false;
     }
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Fetch activity ──────────────────────────────────────────────────────────
 
-  const currentStep = incident
-    ? TIMELINE.findIndex((s) => s.key === incident.status)
-    : -1;
+  const fetchActivity = async (sysId?: string) => {
+    if (!sysId) return;
+    setUpdatesLoading(true);
+    try {
+      const { data } = await getIncidentActivity(sysId);
+      const activities = (data?.result || []) as ActivityEntry[];
+      setUpdates(activities);
+    } catch { setUpdates([]); }
+    finally { setUpdatesLoading(false); }
+  };
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
+  const currentStep = incident ? TIMELINE.findIndex((s) => s.key === incident.status) : -1;
 
   return (
     <Layout>
@@ -276,15 +336,11 @@ const Status = () => {
               <Search className="h-5 w-5" />
               <span className="text-sm font-medium">Track Request</span>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-foreground mb-2">
-              Track Your Request
-            </h1>
-            <p className="text-muted-foreground">
-              Enter your Incident ID to check the status
-            </p>
+            <h1 className="text-2xl sm:text-3xl font-bold text-foreground mb-2">Track Your Request</h1>
+            <p className="text-muted-foreground">Enter your Incident ID to check the status</p>
           </div>
 
-          {/* Search box */}
+          {/* Search */}
           <div className="bg-card rounded-xl p-6 shadow-sm border border-border mb-6">
             <div className="flex flex-col sm:flex-row gap-4">
               <div className="flex-1 space-y-2">
@@ -298,14 +354,8 @@ const Status = () => {
                   onKeyDown={(e) => e.key === "Enter" && handleSearch()}
                 />
               </div>
-              <Button
-                onClick={() => handleSearch()}
-                disabled={isSearching || !incidentId.trim()}
-                className="h-12"
-              >
-                {isSearching
-                  ? <Loader2 className="h-5 w-5 animate-spin" />
-                  : <Search className="h-5 w-5" />}
+              <Button onClick={() => handleSearch()} disabled={isSearching || !incidentId.trim()} className="h-12">
+                {isSearching ? <Loader2 className="h-5 w-5 animate-spin" /> : <Search className="h-5 w-5" />}
                 Search
               </Button>
             </div>
@@ -319,21 +369,16 @@ const Status = () => {
               <p className="text-muted-foreground mb-6">
                 No incident found for "<strong>{incidentId}</strong>". Check the ID and try again.
               </p>
-              <Link to="/report">
-                <Button variant="outline">Report a New Incident</Button>
-              </Link>
+              <Link to="/report"><Button variant="outline">Report a New Incident</Button></Link>
             </div>
           )}
 
           {/* Incident details */}
           {incident && (
             <div className="space-y-6">
-
-              {/* Live status badge */}
               {isFetchingLive && (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground justify-end">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Fetching latest status from ServiceNow…
+                  <Loader2 className="h-3 w-3 animate-spin" /> Fetching latest status from ServiceNow…
                 </div>
               )}
 
@@ -349,7 +394,6 @@ const Status = () => {
                   </span>
                 </div>
 
-                {/* Status pill */}
                 <div className="flex items-center gap-3 p-4 bg-muted rounded-lg mb-5">
                   <div className={`w-3 h-3 rounded-full ${STATUS_CONFIG[incident.status].color} animate-pulse`} />
                   <div>
@@ -358,7 +402,6 @@ const Status = () => {
                   </div>
                 </div>
 
-                {/* Details grid */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                   <div className="flex items-start gap-2">
                     <Mail className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
@@ -397,8 +440,7 @@ const Status = () => {
                     </div>
                     {updatesLoading && (
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Loading
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading
                       </div>
                     )}
                   </div>
@@ -412,11 +454,14 @@ const Status = () => {
                       <div className="absolute left-2.5 top-1 bottom-1 w-px bg-border" />
                       <div className="space-y-4">
                         {updates.map((entry, index) => {
-                          const isWorkNote = entry.element === "work_notes";
-                          const dotClasses = isWorkNote
-                            ? "border-amber-300 bg-amber-500"
-                            : "border-sky-300 bg-sky-500";
-
+                          const isWorkNote  = entry.element === "work_notes";
+                          const dotClasses  = isWorkNote ? "border-amber-300 bg-amber-500" : "border-sky-300 bg-sky-500";
+                          
+                          // Extract username from bracketed note (e.g., "[cr_kakinada]" from the note content)
+                          const extractedUsername = extractUsernameFromNote(entry.value);
+                          const usernameToDisplay = extractedUsername || entry.sys_created_by;
+                          const roleDisplay = formatRoleWithDistrict(usernameToDisplay, "");
+                          
                           return (
                             <div key={`${entry.sys_created_on}-${index}`} className="relative">
                               <div className={`absolute -left-[1.15rem] top-1 h-3.5 w-3.5 rounded-full border-2 ${dotClasses}`} />
@@ -426,13 +471,12 @@ const Status = () => {
                                     <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${isWorkNote ? "bg-amber-50 text-amber-700" : "bg-sky-50 text-sky-700"}`}>
                                       {isWorkNote ? "Work Note" : "Comment"}
                                     </span>
-                                    <p className="text-sm font-semibold text-foreground">{formatTeamName(entry.sys_created_by)}</p>
+                                    <p className="text-sm font-semibold text-foreground">{roleDisplay}</p>
                                   </div>
                                   <p className="text-xs text-muted-foreground">{formatDateIST(entry.sys_created_on)}</p>
                                 </div>
-
                                 <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground">
-                                  {entry.value}
+                                  {extractedUsername ? entry.value.replace(/^\[[^\]]+\]\s*/, "") : entry.value}
                                 </p>
                               </div>
                             </div>
@@ -453,7 +497,6 @@ const Status = () => {
                     const current = i === currentStep;
                     const Icon    = STATUS_CONFIG[step.key as keyof typeof STATUS_CONFIG].icon;
                     const color   = STATUS_CONFIG[step.key as keyof typeof STATUS_CONFIG].color;
-
                     return (
                       <div key={step.key} className="flex gap-4">
                         <div className="flex flex-col items-center">
@@ -467,9 +510,7 @@ const Status = () => {
                           )}
                         </div>
                         <div className="pt-2">
-                          <p className={`font-medium ${done ? "text-foreground" : "text-muted-foreground"}`}>
-                            {step.label}
-                          </p>
+                          <p className={`font-medium ${done ? "text-foreground" : "text-muted-foreground"}`}>{step.label}</p>
                           <p className="text-sm text-muted-foreground">{step.desc}</p>
                         </div>
                       </div>
@@ -478,12 +519,7 @@ const Status = () => {
                 </div>
               </div>
 
-              {/* Back button */}
-              <Link to="/">
-                <Button variant="outline" className="w-full">
-                  <ArrowLeft className="h-4 w-4" /> Back to Home
-                </Button>
-              </Link>
+              <Link to="/"><Button variant="outline" className="w-full"><ArrowLeft className="h-4 w-4" /> Back to Home</Button></Link>
             </div>
           )}
 
@@ -492,9 +528,7 @@ const Status = () => {
             <div className="bg-card rounded-xl p-8 shadow-sm border border-border text-center">
               <Clock className="h-12 w-12 mx-auto opacity-30 mb-4" />
               <h3 className="font-semibold text-lg text-foreground mb-2">Enter Your Incident ID</h3>
-              <p className="text-muted-foreground">
-                Use the search box above to track your emergency request.
-              </p>
+              <p className="text-muted-foreground">Use the search box above to track your emergency request.</p>
             </div>
           )}
 

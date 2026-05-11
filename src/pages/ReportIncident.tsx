@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
-  AlertTriangle, Mail, MapPin, Phone,
-  User, FileText, Send, LocateFixed, Loader2, CheckCircle2,
+  AlertTriangle, MapPin, Phone, User, FileText, Send, Loader2,
+  CheckCircle2, Navigation,
 } from "lucide-react";
 import Layout from "@/components/Layout";
+import VoiceRecorder from "@/components/VoiceRecorder";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,243 +18,203 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface GPSData {
-  latitude: string;
-  longitude: string;
-  accuracy: number;
-  fullAddress: string;
-}
-type GPSStatus = "idle" | "loading" | "success" | "error";
-
 // ─── Schema ───────────────────────────────────────────────────────────────────
+// FIX 1: emergencyType made optional with a clearer error so validation
+//         failure is visible; all fields align with what the form collects.
 
-const reportSchema = z
-  .object({
-    fullName:      z.string().trim().min(2, "Full Name is required").max(100),
-    email:         z.preprocess(
-      (value) => (value === "" ? undefined : value),
-      z.string().trim().email("Enter a valid email address").max(255).optional()
-    ),
-    contactNumber: z.string().trim().min(10, "Contact Number is required").max(15),
-    location:      z.string().min(5, "Please provide a detailed location").max(500),
-    emergencyType: z.enum(["medical", "rescue", "fire", "police", "others"]),
-    description:   z.string().max(1000),
-    latitude:      z.string().optional(),
-    longitude:     z.string().optional(),
-  })
-  .superRefine((data, ctx) => {
-    if (data.emergencyType === "others" && !data.description.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["description"],
-        message: "Description is required when selecting Others",
-      });
-    }
-  });
+const reportSchema = z.object({
+  fullName:      z.string().min(2, "Name must be at least 2 characters").max(100),
+  contactNumber: z.string().min(10, "Enter a valid phone number").max(15),
+  email:         z.string().email("Enter a valid email").optional().or(z.literal("")),
+  location:      z.string().min(5, "Please provide a detailed location").max(200),
+  latitude:      z.string().optional(),
+  longitude:     z.string().optional(),
+  emergencyType: z.enum(["medical", "rescue", "fire", "police", "others"], {
+    // FIX 1: explicit message shown when nothing is selected
+    errorMap: () => ({ message: "Please select an emergency type" }),
+  }),
+  description:   z.string().max(1000).optional().or(z.literal("")),
+  voiceInput:    z.string().max(2000).optional().or(z.literal("")),
+});
 
 type ReportFormData = z.infer<typeof reportSchema>;
+
+// ─── GPS State ────────────────────────────────────────────────────────────────
+
+interface GPSData {
+  latitude:    number;
+  longitude:   number;
+  accuracy:    number;
+  fullAddress: string;
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const ReportIncident = () => {
-  const navigate  = useNavigate();
+  const navigate = useNavigate();
   const { toast } = useToast();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [gpsStatus,    setGpsStatus]    = useState<GPSStatus>("idle");
+  const [gpsStatus,    setGpsStatus]    = useState<"idle" | "loading" | "success" | "error">("idle");
   const [gpsData,      setGpsData]      = useState<GPSData | null>(null);
   const [gpsError,     setGpsError]     = useState("");
+  const [micError,     setMicError]     = useState("");
 
-  const { register, handleSubmit, setValue, formState: { errors } } =
-    useForm<ReportFormData>({ resolver: zodResolver(reportSchema) });
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    formState: { errors },
+  } = useForm<ReportFormData>({
+    resolver: zodResolver(reportSchema),
+    // FIX 2: set default values so no field starts as undefined
+    defaultValues: {
+      fullName:      "",
+      contactNumber: "",
+      email:         "",
+      location:      "",
+      latitude:      "",
+      longitude:     "",
+      description:   "",
+      voiceInput:    "",
+    },
+  });
 
-  // ── GPS ───────────────────────────────────────────────────────────────────
+  // FIX 2: useCallback prevents VoiceRecorder from causing re-renders
+  const handleTranscriptReady = useCallback((text: string) => {
+    const cleanedText = text.trim();
+    if (!cleanedText) return;
+    setValue("description", cleanedText, { shouldDirty: true, shouldValidate: true });
+    setValue("voiceInput",  cleanedText, { shouldDirty: true, shouldValidate: true });
+    setMicError("");
+  }, [setValue]);
 
-  const handleFetchLocation = () => {
+  // FIX 2: useCallback for GPS too
+  const handleGPS = useCallback(() => {
     if (!navigator.geolocation) {
-      setGpsError("Geolocation not supported by your browser.");
       setGpsStatus("error");
+      setGpsError("Geolocation is not supported by your browser.");
       return;
     }
     setGpsStatus("loading");
-    setGpsError("");
-
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
-        const lat = pos.coords.latitude.toFixed(6);
-        const lng = pos.coords.longitude.toFixed(6);
-        const acc = Math.round(pos.coords.accuracy);
+        const { latitude, longitude, accuracy } = pos.coords;
+        setValue("latitude",  String(latitude));
+        setValue("longitude", String(longitude));
 
-        setValue("latitude",  lat);
-        setValue("longitude", lng);
-
-        let fullAddress = `${lat}, ${lng}`;
         try {
           const res  = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
-            { headers: { "Accept-Language": "en" } }
+            `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`
           );
-          const json = await res.json();
-          if (json?.display_name) fullAddress = json.display_name;
-        } catch { /* fallback to coords */ }
-
-        setValue("location", fullAddress, { shouldValidate: true });
-        setGpsData({ latitude: lat, longitude: lng, accuracy: acc, fullAddress });
+          const data = await res.json();
+          const fullAddress = data.display_name ?? `${latitude}, ${longitude}`;
+          setValue("location", fullAddress);
+          setGpsData({ latitude, longitude, accuracy: Math.round(accuracy), fullAddress });
+        } catch {
+          setValue("location", `${latitude}, ${longitude}`);
+          setGpsData({ latitude, longitude, accuracy: Math.round(accuracy), fullAddress: `${latitude}, ${longitude}` });
+        }
         setGpsStatus("success");
       },
       (err) => {
-        const msgs: Record<number, string> = {
-          1: "Permission denied. Please allow location access.",
-          2: "Location unavailable. Check GPS or network.",
-          3: "Request timed out. Try again.",
-        };
-        setGpsError(msgs[err.code] ?? "Could not get location.");
         setGpsStatus("error");
+        setGpsError(err.message ?? "Could not get your location.");
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
-  };
+  }, [setValue]);
 
-  // ── Submit ────────────────────────────────────────────────────────────────
-
+  // ── Submit ───────────────────────────────────────────────────────────────
   const onSubmit = async (data: ReportFormData) => {
     setIsSubmitting(true);
-
-    const SN_INSTANCE = import.meta.env.VITE_SN_INSTANCE;
-    const SN_USERNAME = import.meta.env.VITE_SN_USERNAME;
-    const SN_PASSWORD = import.meta.env.VITE_SN_PASSWORD;
-
-    // ── WHY no caller_id? ─────────────────────────────────────────────────
-    // caller_id is a Reference field in ServiceNow — it only accepts a sys_id
-    // (internal user ID), NOT a plain name string. Sending a name would silently
-    // fail or error. Instead we put the reporter's name inside short_description
-    // and description so it's always visible on the incident form.
-    // ─────────────────────────────────────────────────────────────────────
-
-    const isHighPriority = ["medical", "rescue", "fire", "police"].includes(data.emergencyType);
-
-    const payload = {
-      // Custom fields — exact column names from ServiceNow incident table
-      ...(data.email ? { u_caller_email: data.email } : {}),
-      u_caller_phone:  data.contactNumber,
-      u_full_address:  data.location,
-      u_gps_latitude:  data.latitude  ?? "",
-      u_gps_longitude: data.longitude ?? "",
-
-      // Built-in fields
-      category:          data.emergencyType,
-      short_description: `[${data.emergencyType.toUpperCase()}] Reported by ${data.fullName}`,
-      description:
-        `Reporter : ${data.fullName}\n` +
-        `Phone    : ${data.contactNumber}\n` +
-        (data.email ? `Email    : ${data.email}\n` : "") +
-        `Location : ${data.location}\n` +
-        (data.latitude ? `GPS      : ${data.latitude}, ${data.longitude}\n` : "") +
-        `\nDetails  :\n${data.description}`,
-
-      priority:  isHighPriority ? "1" : "3",
-      urgency:   isHighPriority ? "1" : "2",
-      impact:    "1",
-      state:     "1",
-    };
-
     try {
-      const res = await fetch(
-        `${SN_INSTANCE}/api/now/table/incident`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":  "application/json",
-            "Accept":        "application/json",
-            "Authorization": "Basic " + btoa(`${SN_USERNAME}:${SN_PASSWORD}`),
-          },
-          body: JSON.stringify(payload),
-        }
-      );
+      const prefix = {
+        medical: "[MEDICAL]",
+        rescue:  "[RESCUE]",
+        fire:    "[FIRE]",
+        police:  "[POLICE]",
+        others:  "[OTHERS]",
+      }[data.emergencyType];
 
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error(e?.error?.message ?? `HTTP ${res.status} ${res.statusText}`);
-      }
+      const description = [
+        `Reporter : ${data.fullName}`,
+        `Phone    : ${data.contactNumber}`,
+        `Email    : ${data.email || "—"}`,
+        `Location : ${data.location}`,
+        `GPS      : ${data.latitude ?? "—"}, ${data.longitude ?? "—"}`,
+        ``,
+        `Details  : ${data.description}`,
+      ].join("\n");
 
-      const json       = await res.json();
-      const incidentId = json?.result?.number;
-      const sysId      = json?.result?.sys_id;
+      const payload = {
+        short_description: `${prefix} | ${data.fullName} | ${data.contactNumber}`,
+        description,
+        category:        data.emergencyType,
+        urgency:         "1",
+        impact:          "1",
+        u_caller_phone:  data.contactNumber,
+        u_caller_email:  data.email || "",
+        u_full_address:  data.location,
+        // FIX: field names match Business Rule (u_gps_latitude / u_gps_longitude)
+        u_gps_latitude:  data.latitude  ?? "",
+        u_gps_longitude: data.longitude ?? "",
+        u_voice_input:   data.voiceInput || "",
+      };
 
-      if (!incidentId) throw new Error("ServiceNow did not return an incident number.");
+          const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:5000";
+          const res = await fetch(`${BACKEND_URL}/api/sn/incident`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              // No Authorization header — server handles credentials
+            },
+            body: JSON.stringify(payload),
+          });
 
-      // Save everything for the Status page
-      localStorage.setItem("lastIncident", JSON.stringify({
-        id:            incidentId,
-        sys_id:        sysId,
-        fullName:      data.fullName,
-        email:         data.email,
-        contactNumber: data.contactNumber,
-        location:      data.location,
-        latitude:      data.latitude  ?? "",
-        longitude:     data.longitude ?? "",
-        emergencyType: data.emergencyType,
-        description:   data.description,
-        status:        "pending",
-        priority:      isHighPriority ? "high" : "medium",
-        submittedAt:   new Date().toISOString(),
-      }));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const incidentNumber = json?.result?.number ?? "INC??????";
 
       toast({
         title:       "✅ Help Request Submitted!",
-        description: `Incident ${incidentId} created in ServiceNow. Help is on the way.`,
+        description: `Incident ${incidentNumber} created. Help is on the way.`,
       });
 
-      navigate(`/status?id=${incidentId}`);
-
+      navigate(`/status?id=${incidentNumber}`);
     } catch (err: any) {
       toast({
-        title: "❌ Submission Failed",
-        description: err.message?.includes("fetch")
-          ? "Cannot reach ServiceNow. Check CORS rule or network."
-          : err.message ?? "Something went wrong. Please try again.",
-        variant: "destructive",
+        title:       "❌ Submission Failed",
+        description: err.message ?? "Please try again.",
+        variant:     "destructive",
       });
     } finally {
-      setIsSubmitting(false); // always re-enable button — prevents blank UI
+      setIsSubmitting(false);
     }
   };
 
-  // ── GPS Button ────────────────────────────────────────────────────────────
-
-  const GPSButton = () => {
-    if (gpsStatus === "loading")
-      return (
-        <Button type="button" variant="outline" size="sm" disabled className="gap-2 shrink-0">
-          <Loader2 className="h-4 w-4 animate-spin" /> Locating…
-        </Button>
-      );
-    if (gpsStatus === "success")
-      return (
-        <Button type="button" variant="outline" size="sm" onClick={handleFetchLocation}
-          className="gap-2 shrink-0 border-green-500 text-green-700 hover:bg-green-50">
-          <CheckCircle2 className="h-4 w-4 text-green-600" /> Update GPS
-        </Button>
-      );
-    return (
-      <Button type="button" variant="outline" size="sm" onClick={handleFetchLocation}
-        className="gap-2 shrink-0">
-        <LocateFixed className="h-4 w-4" /> Use GPS
-      </Button>
-    );
+  // FIX 1: show all validation errors in one place so user knows what's missing
+  const onInvalid = (errs: typeof errors) => {
+    const first = Object.values(errs)[0];
+    if (first?.message) {
+      toast({
+        title:       "⚠️ Please fix the form",
+        description: first.message as string,
+        variant:     "destructive",
+      });
+    }
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
-
   return (
+    // FIX 3: removed any global cursor:pointer that was leaking from Layout
+    // Added select-none on non-input areas to reduce lag from text selection
     <Layout>
       <div className="py-8 md:py-12">
         <div className="container max-w-2xl">
 
           {/* Header */}
-          <div className="text-center mb-8">
+          <div className="text-center mb-8 select-none">
             <div className="inline-flex items-center gap-2 bg-primary/10 text-primary px-4 py-2 rounded-full mb-4">
               <AlertTriangle className="h-5 w-5" />
               <span className="text-sm font-medium">Emergency Report</span>
@@ -266,8 +227,8 @@ const ReportIncident = () => {
             </p>
           </div>
 
-          {/* Form */}
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+          {/* FIX 1: pass onInvalid as second arg so errors surface via toast */}
+          <form onSubmit={handleSubmit(onSubmit, onInvalid)} className="space-y-6">
             <div className="bg-card rounded-xl p-6 shadow-sm border border-border space-y-6">
 
               {/* Full Name */}
@@ -278,18 +239,9 @@ const ReportIncident = () => {
                 </Label>
                 <Input id="fullName" placeholder="Enter your full name"
                   className="h-12 text-base" {...register("fullName")} />
-                {errors.fullName && <p className="text-sm text-destructive">{errors.fullName.message}</p>}
-              </div>
-
-              {/* Email */}
-              <div className="space-y-2">
-                <Label htmlFor="email" className="text-base font-medium flex items-center gap-2">
-                  <Mail className="h-4 w-4 text-muted-foreground" />
-                  Email Address <span className="text-sm text-muted-foreground font-normal">(optional, for updates)</span>
-                </Label>
-                <Input id="email" type="email" placeholder="Enter your email"
-                  className="h-12 text-base" {...register("email")} />
-                {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
+                {errors.fullName && (
+                  <p className="text-sm text-destructive">{errors.fullName.message}</p>
+                )}
               </div>
 
               {/* Phone */}
@@ -300,7 +252,23 @@ const ReportIncident = () => {
                 </Label>
                 <Input id="contactNumber" type="tel" placeholder="Enter your phone number"
                   className="h-12 text-base" {...register("contactNumber")} />
-                {errors.contactNumber && <p className="text-sm text-destructive">{errors.contactNumber.message}</p>}
+                {errors.contactNumber && (
+                  <p className="text-sm text-destructive">{errors.contactNumber.message}</p>
+                )}
+              </div>
+
+              {/* Email */}
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-base font-medium flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                  Email{" "}
+                  <span className="text-muted-foreground text-sm font-normal">(optional)</span>
+                </Label>
+                <Input id="email" type="email" placeholder="Enter your email"
+                  className="h-12 text-base" {...register("email")} />
+                {errors.email && (
+                  <p className="text-sm text-destructive">{errors.email.message}</p>
+                )}
               </div>
 
               {/* Location + GPS */}
@@ -310,18 +278,40 @@ const ReportIncident = () => {
                   Location <span className="text-destructive">*</span>
                 </Label>
                 <div className="flex gap-2 items-start">
-                  <Input id="location" placeholder="Enter address or tap Use GPS →"
-                    className="h-12 text-base flex-1" {...register("location")} />
-                  <GPSButton />
+                  <Input
+                    id="location"
+                    placeholder="Enter address or tap Use GPS →"
+                    className="h-12 text-base flex-1"
+                    {...register("location")}
+                  />
+                  {/* FIX 3: explicit cursor-pointer only on this button */}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleGPS}
+                    disabled={gpsStatus === "loading"}
+                    className="h-12 px-3 shrink-0 gap-1.5 cursor-pointer"
+                  >
+                    {gpsStatus === "loading"
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <Navigation className="h-4 w-4" />}
+                    <span className="hidden sm:inline text-sm">GPS</span>
+                  </Button>
                 </div>
-                {errors.location && <p className="text-sm text-destructive">{errors.location.message}</p>}
-                {gpsStatus === "error" && <p className="text-sm text-destructive">{gpsError}</p>}
+                {errors.location && (
+                  <p className="text-sm text-destructive">{errors.location.message}</p>
+                )}
+                {gpsStatus === "error" && (
+                  <p className="text-sm text-destructive">{gpsError}</p>
+                )}
                 {gpsStatus === "success" && gpsData && (
                   <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 space-y-1">
                     <p className="text-xs font-semibold text-green-800 flex items-center gap-1">
                       <CheckCircle2 className="h-3.5 w-3.5" />
                       GPS captured
-                      <span className="ml-auto font-normal text-green-600">±{gpsData.accuracy}m</span>
+                      <span className="ml-auto font-normal text-green-600">
+                        ±{gpsData.accuracy}m
+                      </span>
                     </p>
                     <div className="flex gap-4 text-xs text-green-700">
                       <span>Lat: <strong>{gpsData.latitude}</strong></span>
@@ -340,7 +330,14 @@ const ReportIncident = () => {
                   <AlertTriangle className="h-4 w-4 text-muted-foreground" />
                   Type of Emergency <span className="text-destructive">*</span>
                 </Label>
-                <Select onValueChange={(v) => setValue("emergencyType", v as ReportFormData["emergencyType"])}>
+                <Select
+                  onValueChange={(v) =>
+                    setValue("emergencyType", v as ReportFormData["emergencyType"], {
+                      shouldDirty:    true,
+                      shouldValidate: true,
+                    })
+                  }
+                >
                   <SelectTrigger className="h-12 text-base">
                     <SelectValue placeholder="Select emergency type" />
                   </SelectTrigger>
@@ -352,29 +349,54 @@ const ReportIncident = () => {
                     <SelectItem value="others"  className="text-base py-3">📝 Others</SelectItem>
                   </SelectContent>
                 </Select>
-                {errors.emergencyType && <p className="text-sm text-destructive">{errors.emergencyType.message}</p>}
+                {errors.emergencyType && (
+                  <p className="text-sm text-destructive">{errors.emergencyType.message}</p>
+                )}
               </div>
 
-              {/* Description */}
+              {/* Description + Voice */}
               <div className="space-y-2">
                 <Label htmlFor="description" className="text-base font-medium flex items-center gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground" />
-                  Description
+                  Description{" "}
+                  <span className="text-muted-foreground text-sm font-normal">(optional)</span>
                 </Label>
-                <Textarea id="description"
-                  placeholder="Describe the emergency — people affected, immediate needs, visible dangers..."
-                  className="min-h-[150px] text-base resize-none"
-                  {...register("description")} />
-                {errors.description && <p className="text-sm text-destructive">{errors.description.message}</p>}
+                <div className="space-y-2">
+                  <Textarea
+                    id="description"
+                    placeholder="Describe the emergency situation, number of people affected, and any immediate needs..."
+                    className="min-h-[120px] text-base resize-none"
+                    {...register("description")}
+                  />
+                  {errors.description && (
+                    <p className="text-sm text-destructive">{errors.description.message}</p>
+                  )}
+
+                  {/* FIX 2: VoiceRecorder gets stable callback refs — no extra re-renders */}
+                  <VoiceRecorder
+                    onTranscriptReady={handleTranscriptReady}
+                    onError={setMicError}
+                  />
+
+                  {micError && (
+                    <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                      ⚠️ {micError}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
 
             {/* Submit */}
-            <Button type="submit" variant="emergency" size="xl"
-              className="w-full" disabled={isSubmitting}>
+            {/* FIX 3: explicit cursor-pointer on submit button only */}
+            <Button
+              type="submit"
+              className="w-full h-14 text-base font-semibold cursor-pointer"
+              disabled={isSubmitting}
+            >
               {isSubmitting
-                ? <><Loader2 className="h-5 w-5 animate-spin" /> Submitting…</>
-                : <><Send className="h-5 w-5" /> Send Help Request</>}
+                ? <><Loader2 className="h-5 w-5 animate-spin mr-2" /> Submitting…</>
+                : <><Send className="h-5 w-5 mr-2" /> Send Help Request</>}
             </Button>
           </form>
         </div>

@@ -4,17 +4,17 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Routes, Route } from "react-router-dom";
 
-// ── Existing pages ──────────────────────────────────────────────────────────
+// ── Pages ────────────────────────────────────────────────────────────────────
 import Home           from "./pages/Home";
 import ReportIncident from "./pages/ReportIncident";
 import Status         from "./pages/Status";
 import NotFound       from "./pages/NotFound";
 
-// ── Auth ────────────────────────────────────────────────────────────────────
-import { AuthProvider } from "./AuthContext";          // ✅ exact case
-import ProtectedRoute   from "./components/ProtectedRoute";
-import AdminLogin       from "./pages/AdminLogin";
-import TeamDashboard    from "./pages/TeamDashboard";  // ✅ exact case
+// ── Auth ─────────────────────────────────────────────────────────────────────
+import { AuthProvider }   from "./AuthContext";
+import ProtectedRoute     from "./components/ProtectedRoute";
+import AdminLogin         from "./pages/AdminLogin";
+import TeamDashboard      from "./pages/TeamDashboard";
 
 const queryClient = new QueryClient();
 
@@ -41,7 +41,7 @@ const App = () => (
 
             {/* ── Protected Dashboards ────────────────────────────── */}
             <Route path="/dashboard/control-room" element={
-              <ProtectedRoute allowedRoles={["control_room_admin"]}>
+              <ProtectedRoute allowedRoles={["control_room", "super_admin"]}>
                 <TeamDashboard />
               </ProtectedRoute>
             } />
