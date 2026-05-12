@@ -256,7 +256,7 @@ VITE_SN_USERNAME=admin
 VITE_SN_PASSWORD=your_admin_password
 
 # Backend API
-VITE_API_BASE_URL=http://localhost:5000
+VITE_BACKEND_URL=http://localhost:5000
 ```
 
 Create a `.env` file in the `backend/` directory:
@@ -272,6 +272,9 @@ GROQ_API_KEY=your_groq_api_key
 
 # Server
 PORT=5000
+
+# CORS (comma-separated if multiple frontend domains)
+CORS_ORIGIN=http://localhost:8080
 ```
 
 ---
@@ -305,7 +308,7 @@ npm run build
 npx vercel
 
 # Set environment variables in Vercel Dashboard:
-# VITE_SN_INSTANCE, VITE_SN_USERNAME, VITE_SN_PASSWORD
+# VITE_SN_INSTANCE, VITE_SN_USERNAME, VITE_SN_PASSWORD, VITE_BACKEND_URL
 ```
 
 **After deploying:** Update your ServiceNow CORS rule to add your Vercel URL.

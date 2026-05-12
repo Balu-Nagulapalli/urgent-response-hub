@@ -15,7 +15,15 @@ const backendEnvPath = path.join(__dirname, ".env");
 dotenv.config({ path: backendEnvPath });
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "https://erm-kappa.vercel.app",
+    /\.vercel\.app$/,
+  ],
+  credentials: true,
+}));
 app.use(express.json());
 
 // ─── ServiceNow Config ────────────────────────────────────────────────────────
