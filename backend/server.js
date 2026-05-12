@@ -59,6 +59,12 @@ if (!groqConfigured) {
   console.error("❌ [Server] GROQ_API_KEY is missing. Add it to backend/.env and restart.");
 }
 
+// Optional: LLAMA API key (can be provided separately). If present, use for classification.
+const llamaApiKey = (process.env.LLAMA_API_KEY || "").trim();
+const classificationApiKey = llamaApiKey || groqApiKey;
+const classificationConfigured = Boolean(classificationApiKey);
+console.log(`LLAMA API Loaded: ${Boolean(llamaApiKey)}; Classification API available: ${classificationConfigured}`);
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE },
@@ -455,6 +461,108 @@ app.post("/speech-to-text", upload.single("file"), async (req, res) => {
   } finally {
     console.log(`🏁 [Server] Request finished in ${Date.now() - requestStart}ms`);
     console.log("────────────────────────────────────────");
+  }
+});
+
+// ─── Route: AI Classification (Groq LLAMA) ───────────────────────────────────
+
+app.post("/api/sn/classify", async (req, res) => {
+  console.log("\n🤖 [Server] === AI Classification Request ===");
+  if (!classificationConfigured) {
+    console.error("❌ [Server] Classification API key missing (LLAMA_API_KEY or GROQ_API_KEY)");
+    return res.status(503).json({
+      error: "Classification API not configured",
+      details: "Add LLAMA_API_KEY or GROQ_API_KEY to environment and restart.",
+    });
+  }
+
+  const { text, latitude, longitude } = req.body || {};
+
+  if (!text || !text.trim()) {
+    return res.status(400).json({
+      error: "No text to classify",
+      details: "Provide 'text' field in request body",
+    });
+  }
+
+  try {
+    console.log(`📝 [Server] Input: "${text.substring(0, 100)}..."`);
+
+    // Call Groq to classify the emergency
+    const classificationPrompt = `You are an emergency classification AI for a disaster response system.
+
+Classify this emergency report into one of: medical, fire, police, rescue, others.
+Extract severity: Critical, High, Medium, Low.
+Try to identify the district if mentioned.
+Provide a concise summary of the emergency.
+
+IMPORTANT: Look for keywords like:
+- Medical: pain, injured, hurt, accident, hospital, sick, breathing, medical, health
+- Fire: fire, burning, smoke, flames, explosion, gas leak
+- Police: robbery, theft, crime, violence, assault, attack, threat, suspicious
+- Rescue: flood, trapped, collapsed, drowning, earthquake, storm, rescue, landslide
+- Others: any other emergency
+
+Report: "${text}"
+${latitude && longitude ? `Location: Latitude ${latitude}, Longitude ${longitude}` : ""}
+
+Respond with ONLY valid JSON (no markdown, no explanation):
+{
+  "type": "medical|fire|police|rescue|others",
+  "severity": "Critical|High|Medium|Low",
+  "summary": "brief emergency description",
+  "district": "district name if identifiable, otherwise null",
+  "confidence": 0.0-1.0
+}`;
+
+    // Use classificationApiKey (prefers LLAMA_API_KEY if provided, otherwise GROQ_API_KEY)
+    const classificationHeaders = { Authorization: `Bearer ${classificationApiKey}` };
+    const classificationModel = "llama-3.1-8b-instant";
+    const response = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: classificationModel,
+        messages: [{ role: "user", content: classificationPrompt }],
+        temperature: 0.3,
+        max_tokens: 300,
+      },
+      {
+        headers: classificationHeaders,
+        timeout: 15000,
+      }
+    );
+
+    const content = response.data?.choices?.[0]?.message?.content || "{}";
+    console.log(`📋 [Server] Groq response: ${content}`);
+
+    // Parse JSON from response (handle markdown code blocks if present)
+    let jsonContent = content.trim();
+    if (jsonContent.includes("```json")) {
+      jsonContent = jsonContent.split("```json")[1]?.split("```")[0]?.trim() || jsonContent;
+    } else if (jsonContent.includes("```")) {
+      jsonContent = jsonContent.split("```")[1]?.split("```")[0]?.trim() || jsonContent;
+    }
+
+    const classification = JSON.parse(jsonContent);
+
+    // Validate required fields
+    if (!classification.type || !classification.severity) {
+      throw new Error("Invalid classification response structure");
+    }
+
+    console.log(`✅ [Server] Classified as: ${classification.type} / ${classification.severity} using ${classificationModel}`);
+    res.json(classification);
+
+  } catch (err) {
+    console.error(`❌ [Server] Classification error: ${err.message}`);
+    if (err?.response?.data) {
+      console.error("📥 [Server] Classification API response body:", JSON.stringify(err.response.data).substring(0, 2000));
+    }
+    const details = err?.response?.data?.error?.message || err.message || JSON.stringify(err?.response?.data || err);
+    res.status(500).json({
+      error: "Classification failed",
+      details,
+    });
   }
 });
 

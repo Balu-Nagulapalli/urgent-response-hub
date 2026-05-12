@@ -81,13 +81,39 @@ const ReportIncident = () => {
   });
 
   // FIX 2: useCallback prevents VoiceRecorder from causing re-renders
-  const handleTranscriptReady = useCallback((text: string) => {
+  const handleTranscriptReady = useCallback(async (text: string) => {
     const cleanedText = text.trim();
     if (!cleanedText) return;
     setValue("description", cleanedText, { shouldDirty: true, shouldValidate: true });
     setValue("voiceInput",  cleanedText, { shouldDirty: true, shouldValidate: true });
     setMicError("");
-  }, [setValue]);
+
+    // Auto-classify based on voice input using Groq LLAMA
+    try {
+      const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:5000";
+      const classifyRes = await fetch(`${BACKEND_URL}/api/sn/classify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: cleanedText,
+          latitude: gpsData?.latitude ?? undefined,
+          longitude: gpsData?.longitude ?? undefined,
+        }),
+      });
+
+      if (classifyRes.ok) {
+        const classification = await classifyRes.json();
+        // Auto-select emergency type
+        if (classification.type && ["medical", "fire", "police", "rescue", "others"].includes(classification.type)) {
+          setValue("emergencyType", classification.type, { shouldDirty: true, shouldValidate: true });
+        }
+        console.log("🤖 Auto-classified as:", classification);
+      }
+    } catch (err) {
+      console.warn("ℹ️ Auto-classification skipped:", err);
+      // Non-fatal — user can still select type manually
+    }
+  }, [setValue, gpsData]);
 
   // FIX 2: useCallback for GPS too
   const handleGPS = useCallback(() => {
