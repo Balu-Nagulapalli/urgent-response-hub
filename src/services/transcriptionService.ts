@@ -1,4 +1,4 @@
-const BACKEND_URL = "http://localhost:5000";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:5000";
 const TRANSCRIPTION_TIMEOUT_MS = 30000;
 
 export type TranscriptionStage = "uploading" | "transcribing";
